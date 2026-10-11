@@ -52,6 +52,53 @@ describe('launch.kit.json (the shape Launch parses)', () => {
     expect(manifest?.declaredConfig.plain).toEqual(['A_URL'])
   })
 
+  it("defaults launchProvides.oidc's callbackPath and signedOutPath to Rocketflare's", () => {
+    const { problems: found, manifest } = validateManifest(own())
+    expect(found).toEqual([])
+    expect(manifest?.launchProvides.oidc.callbackPath).toBe('/auth/oidc/callback')
+    expect(manifest?.launchProvides.oidc.signedOutPath).toBe('/login?signedOut=1')
+  })
+
+  it('accepts a callbackPath and a signedOutPath on the app', () => {
+    for (const [callbackPath, signedOutPath] of [
+      ['/auth/callback', '/'],
+      ['/auth/oidc/callback', '/login?signedOut=1'],
+      ['/sso/return/', '/bye?from=sso&x=1'],
+    ]) {
+      const raw = own()
+      Object.assign(raw.launchProvides.oidc, { callbackPath, signedOutPath })
+      const { problems: found, manifest } = validateManifest(raw)
+      expect(found, callbackPath).toEqual([])
+      expect(manifest?.launchProvides.oidc.callbackPath).toBe(callbackPath)
+      expect(manifest?.launchProvides.oidc.signedOutPath).toBe(signedOutPath)
+    }
+  })
+
+  for (const bad of [
+    '',
+    'auth/callback',
+    '//evil.example/auth/callback',
+    'https://app.example.com/auth/callback',
+    '/auth/call back',
+    '/auth/callback\n',
+    '/auth/callback#x',
+    `/${'a'.repeat(300)}`,
+    42,
+  ]) {
+    it(`refuses the OIDC path ${JSON.stringify(bad).slice(0, 40)}`, () => {
+      for (const key of ['callbackPath', 'signedOutPath']) {
+        const raw = own()
+        raw.launchProvides.oidc[key] = bad
+        const result = validateManifest(raw)
+        expect(result.manifest, key).toBeNull()
+        expect(
+          result.problems.some(p => p.startsWith(`launchProvides.oidc.${key}:`)),
+          result.problems.join('\n')
+        ).toBe(true)
+      }
+    })
+  }
+
   it('tolerates unknown fields', () => {
     const raw = own()
     raw.future = { anything: true }

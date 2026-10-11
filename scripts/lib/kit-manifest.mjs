@@ -27,6 +27,12 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]*$/
 const WORKFLOW_FILE = /^[\w.-]+\.ya?ml$/
 const EXTENSION = /^[a-z_][a-z0-9_]*$/
 const TITLE_SUFFIX = /^[a-z0-9][a-z0-9-]*$/
+/** A path on the app's own origin: one leading `/`, no scheme, no host, no whitespace, no `#`. */
+const RP_PATH = /^\/(?!\/)[^\s#]*$/
+
+/** Rocketflare's relying-party paths, the contract's defaults (`launchProvides.oidc`). */
+export const KIT_OIDC_CALLBACK_PATH = '/auth/oidc/callback'
+export const KIT_OIDC_SIGNED_OUT_PATH = '/login?signedOut=1'
 
 /** How Launch writes a generated secret's 32 random bytes: 64 hex characters, or standard base64. */
 export const GENERATED_SECRET_KINDS = ['hex64', 'base64-32']
@@ -178,6 +184,14 @@ export function validateManifest(input) {
         field(oidc, key, 'launchProvides.oidc', envName)
       for (const key of ['only', 'label'])
         field(oidc, key, 'launchProvides.oidc', envName, { optional: true })
+      // Where sign-in returns and a sign-out lands: Launch registers `{env url}{path}` with the
+      // app's OIDC client. Absent: Rocketflare's.
+      const rpPath = v =>
+        str(0, 300)(v) ?? (RP_PATH.test(v) ? null : 'must be a path on the app, starting with /')
+      field(oidc, 'callbackPath', 'launchProvides.oidc', rpPath, { def: KIT_OIDC_CALLBACK_PATH })
+      field(oidc, 'signedOutPath', 'launchProvides.oidc', rpPath, {
+        def: KIT_OIDC_SIGNED_OUT_PATH,
+      })
     }
     field(provides, 'bootstrapAdmins', 'launchProvides', envName, { optional: true })
     field(provides, 'emailApiKey', 'launchProvides', envName, { optional: true })
