@@ -6,6 +6,11 @@ copy of the kit forward without recreating anything its owner deleted.
 
 If you are running a copy: `pnpm kit:upgrade` tells you which of these you are missing.
 
+## 0.18.0 — 2026-10-11
+
+The kit declares the Launch kit contract in a root `launch.kit.json` (D36), checked by `scripts/kit-check.mjs` in the kit and in every renamed copy, so Launch drives a copy from the copy's own manifest.
+[Porting note](docs/upgrades/0.18.0.md).
+
 ## 0.17.8 — 2026-10-06
 
 Wrangler moves from 4.127 to 4.147: its CLI bundle is about 30% smaller, so `wrangler dev` answers its first request sooner, and it no longer queries GitHub when telemetry is turned off.
