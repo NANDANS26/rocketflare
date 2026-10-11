@@ -6,6 +6,11 @@ copy of the kit forward without recreating anything its owner deleted.
 
 If you are running a copy: `pnpm kit:upgrade` tells you which of these you are missing.
 
+## 0.18.1 — 2026-10-11
+
+`scripts/kit-check.mjs` accepts a copy Launch has provisioned, and no config test judges the checkout it runs in, so a copy whose tomls carry Launch's real KV ids passes its own Gate.
+[Porting note](docs/upgrades/0.18.1.md).
+
 ## 0.18.0 — 2026-10-11
 
 The kit declares the Launch kit contract in a root `launch.kit.json` (D36), checked by `scripts/kit-check.mjs` in the kit and in every renamed copy, so Launch drives a copy from the copy's own manifest.
