@@ -1,23 +1,15 @@
 /**
  * `scripts/kit-check.mjs` — the Launch kit conformance check (D36), shared with the meta-kit
- * (rocketflare-dev/launch-kit, whose `scripts/tests/kit-check.test.mjs` this ports to vitest). It
- * travels into every copy: a copy is an app Launch drives through its own `launch.kit.json`, so the
- * check must pass in the kit AND in a renamed copy (kit.yml runs it on both).
+ * (rocketflare-dev/launch-kit, whose `scripts/tests/kit-check.test.mjs` this ports to vitest).
  *
- * The broken-contract cases run on a scratch copy of the files the checker reads, never on this
- * checkout. The `config` project: no database.
+ * Every case runs on a fixture kit built in a temp directory (`./fixtures/kit-fixture.mjs`, shared
+ * with the meta-kit), never on this checkout: the test travels into every copy, whose files differ
+ * from the kit's by design — renamed, then provisioned by Launch's `write_config`, which commits
+ * the real KV ids. Whether THIS checkout conforms is kit.yml's `Launch kit check` step (and the
+ * renamed copy's), never a test. The `config` project: no database.
  */
 import { execFileSync } from 'node:child_process'
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -30,14 +22,21 @@ import {
   tomlShape,
 } from '../../../../scripts/kit-check.mjs'
 import { parseYaml } from '../../../../scripts/lib/yaml-lite.mjs'
+import {
+  FIXTURE_APP_MANIFEST,
+  FIXTURE_DEPLOY_YML,
+  FIXTURE_TOKENS,
+  FIXTURE_TOMLS,
+  provisionLikeLaunch,
+  writeKitFixture,
+} from './fixtures/kit-fixture.mjs'
 
-const REPO_ROOT = path.resolve(__dirname, '../../../..')
-const SCRIPT = path.join(REPO_ROOT, 'scripts/kit-check.mjs')
+const SCRIPT = path.resolve(__dirname, '../../../../scripts/kit-check.mjs')
+const APP = { slug: 'zz-desk', display: 'Zz Desk', domain: 'zz.example' }
 
 function run(args: string[]): { status: number; stdout: string } {
   try {
     const stdout = execFileSync(process.execPath, [SCRIPT, ...args], {
-      cwd: REPO_ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -48,33 +47,12 @@ function run(args: string[]): { status: number; stdout: string } {
   }
 }
 
-/** Every path the checker reads: root files, workflows, scripts, the Worker's tomls and source. */
-const CHECKED = [
-  /^[^/]+$/,
-  /^\.github\//,
-  /^scripts\//,
-  /^\.claude\/skills\/rf-upgrade\//,
-  /^apps\/web\/[^/]+$/,
-  /^apps\/web\/scripts\//,
-  /^apps\/web\/src\//,
-]
-const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
-  cwd: REPO_ROOT,
-  encoding: 'utf8',
-})
-  .trim()
-  .split('\n')
-  .filter(f => CHECKED.some(re => re.test(f)) && existsSync(path.join(REPO_ROOT, f)))
-
 const dirs: string[] = []
-function scratch(): string {
+/** The fixture kit (`app` null) or a fresh copy of it named `app`. */
+function fixture(app: typeof APP | null = null): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'kit-check-'))
   dirs.push(dir)
-  for (const rel of files) {
-    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
-    cpSync(path.join(REPO_ROOT, rel), path.join(dir, rel), { verbatimSymlinks: true })
-  }
-  return dir
+  return writeKitFixture(dir, { app })
 }
 afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true })
@@ -90,9 +68,9 @@ const edit = (dir: string, rel: string, fn: (text: string) => string) => {
   writeFileSync(file, fn(readFileSync(file, 'utf8')))
 }
 
-describe('kit-check on this checkout', () => {
+describe('kit-check: the kit', () => {
   it('conforms (exit 0, every check green, no warnings)', () => {
-    const res = run(['--json'])
+    const res = run([fixture(), '--json'])
     expect(res.status, res.stdout).toBe(0)
     const report = JSON.parse(res.stdout)
     expect(report.ok).toBe(true)
@@ -104,24 +82,28 @@ describe('kit-check on this checkout', () => {
       'tomls',
     ])
     expect(report.warnings).toEqual([])
-  })
-
-  it('checks the names against the kit, or the copy, this checkout is', () => {
-    const report = checkKit(REPO_ROOT)
-    const app = JSON.parse(readFileSync(path.join(REPO_ROOT, '.rocketflare.json'), 'utf8')).app
-    expect(report.kit?.isCopy).toBe(app !== null)
-    if (app !== null) expect(report.kit?.slug).toBe(app.slug)
+    expect(report.kit).toEqual({
+      id: FIXTURE_TOKENS.slug,
+      slug: FIXTURE_TOKENS.slug,
+      isCopy: false,
+    })
   })
 
   it('runs the gate list with --exec', () => {
-    const report = checkKit(REPO_ROOT, { exec: true })
+    const report = checkKit(fixture(), { exec: true })
     expect(report.checks.find(c => c.id === 'gate-list')?.ok, JSON.stringify(report)).toBe(true)
   })
 
   it('fails --provisioned while the ids are still placeholders', () => {
-    const res = run(['--provisioned'])
+    const res = run([fixture(), '--provisioned'])
     expect(res.status).toBe(1)
     expect(res.stdout).toMatch(/still the placeholder/)
+  })
+
+  it('refuses a real id committed in the kit', () => {
+    const dir = fixture()
+    edit(dir, FIXTURE_TOMLS[0], t => t.replace(/id = "<[A-Z_]+>"/, 'id = "0123456789abcdef"'))
+    expect(failing(checkKit(dir))).toMatch(/must be a <PLACEHOLDER> in the kit/)
   })
 
   it('answers a usage error with exit 2', () => {
@@ -129,41 +111,96 @@ describe('kit-check on this checkout', () => {
   })
 })
 
+describe('kit-check: a copy', () => {
+  it('conforms freshly scaffolded, its ids still placeholders, and fails --provisioned', () => {
+    const dir = fixture(APP)
+    const report = checkKit(dir)
+    expect(report.ok, failing(report)).toBe(true)
+    expect(report.kit).toEqual({ id: FIXTURE_TOKENS.slug, slug: APP.slug, isCopy: true })
+    const res = run([dir, '--provisioned'])
+    expect(res.status).toBe(1)
+    expect(res.stdout).toMatch(/still the placeholder/)
+  })
+
+  it("conforms once Launch's write_config has committed its ids and vars, and passes --provisioned", () => {
+    const dir = fixture(APP)
+    const ids = provisionLikeLaunch(dir)
+    const prod = readFileSync(path.join(dir, FIXTURE_TOMLS[0]), 'utf8')
+    expect(ids).toHaveLength(4)
+    expect(prod).toContain(`id = "${ids[0]}"`)
+    expect(prod).not.toMatch(/<[A-Z0-9_]+>/)
+    expect(prod).toMatch(/^workers_dev = false$/m)
+    expect(prod).toMatch(/^OIDC_ISSUER = "https:\/\/launch\.example\.com"$/m)
+
+    const res = run([dir, '--json'])
+    expect(res.status, res.stdout).toBe(0)
+    expect(JSON.parse(res.stdout).warnings).toEqual([])
+    const provisioned = run([dir, '--provisioned'])
+    expect(provisioned.status, provisioned.stdout).toBe(0)
+  })
+
+  it('still holds a provisioned copy to its names and to one shape', () => {
+    const dir = fixture(APP)
+    provisionLikeLaunch(dir)
+    edit(dir, FIXTURE_TOMLS[1], t => t.replace(`"${APP.slug}-files-staging"`, '"files-staging"'))
+    edit(dir, FIXTURE_TOMLS[0], t => `${t}\n[[kv_namespaces]]\nbinding = "EXTRA"\nid = "abc"\n`)
+    const problems = failing(checkKit(dir, { provisioned: true }))
+    expect(problems).toMatch(/"files-staging" does not follow/)
+    expect(problems).toMatch(/differ in shape/)
+  })
+})
+
 describe('kit-check finds what breaks the contract', () => {
   it('a missing manifest', () => {
-    const dir = scratch()
+    const dir = fixture()
     unlinkSync(path.join(dir, 'launch.kit.json'))
     expect(failing(checkKit(dir))).toMatch(/launch.kit.json: missing/)
   })
 
   it('a missing must-have file', () => {
-    const dir = scratch()
-    unlinkSync(path.join(dir, 'scripts/rename.mjs'))
-    unlinkSync(path.join(dir, 'AGENTS.md'))
+    const dir = fixture()
+    unlinkSync(path.join(dir, 'scripts/init.mjs'))
     unlinkSync(path.join(dir, 'CLAUDE.md'))
     const problems = failing(checkKit(dir))
-    expect(problems).toMatch(/scaffold.init: scripts\/rename.mjs does not exist/)
+    expect(problems).toMatch(/scaffold.init: scripts\/init.mjs does not exist/)
     expect(problems).toMatch(/CLAUDE.md or AGENTS.md/)
   })
 
-  it('an app manifest without the kit id Launch reads', () => {
-    const dir = scratch()
-    edit(dir, '.rocketflare.json', t => {
+  it('an app manifest with "app": null is the kit itself, not a copy', () => {
+    const dir = fixture()
+    writeFileSync(
+      path.join(dir, FIXTURE_APP_MANIFEST),
+      JSON.stringify({
+        app: null,
+        kit: { id: FIXTURE_TOKENS.slug, version: '0.0.0', commit: null },
+      })
+    )
+    const report = checkKit(dir)
+    expect(report.ok, failing(report)).toBe(true)
+    expect(report.kit?.isCopy).toBe(false)
+    expect(report.kit?.slug).toBe(FIXTURE_TOKENS.slug)
+  })
+
+  it('a copy whose app manifest lacks the kit id Launch reads', () => {
+    const dir = fixture(APP)
+    edit(dir, FIXTURE_APP_MANIFEST, t => {
       const m = JSON.parse(t)
       delete m.kit.id
       return JSON.stringify(m)
     })
-    expect(failing(checkKit(dir))).toContain('.rocketflare.json: kit.id missing')
+    const report = checkKit(dir)
+    expect(report.kit?.isCopy).toBe(true)
+    expect(failing(report)).toContain(`${FIXTURE_APP_MANIFEST}: kit.id missing`)
   })
 
   it('a renamed Gate job', () => {
-    const dir = scratch()
+    const dir = fixture()
     edit(dir, '.github/workflows/ci.yml', t => t.replace('name: Gate', 'name: Checks'))
     expect(failing(checkKit(dir))).toMatch(/no job named "Gate"/)
   })
 
   it('a deploy workflow without id-token: write', () => {
-    const dir = scratch()
+    const dir = fixture()
     edit(dir, '.github/workflows/deploy.yml', t =>
       t.replaceAll('id-token: write', 'id-token: none')
     )
@@ -171,29 +208,22 @@ describe('kit-check finds what breaks the contract', () => {
   })
 
   it('a hyperdrive binding, a route and a misnamed queue', () => {
-    const dir = scratch()
-    const slug = checkKit(dir).kit?.slug
-    for (const f of ['wrangler.toml', 'wrangler.staging.toml']) {
-      edit(dir, `apps/web/${f}`, t => `${t}\n[[hyperdrive]]\nbinding = "HD"\nid = "<HD_ID>"\n`)
+    const dir = fixture()
+    for (const f of FIXTURE_TOMLS) {
+      edit(dir, f, t => `${t}\n[[hyperdrive]]\nbinding = "HD"\nid = "<HD_ID>"\n`)
     }
     edit(
       dir,
-      'apps/web/wrangler.toml',
+      FIXTURE_TOMLS[0],
       t => `routes = ["x.test/*"]\n${t}\n[[queues.producers]]\nbinding = "Q"\nqueue = "jobs"\n`
     )
     const problems = failing(checkKit(dir))
     expect(problems).toMatch(/hyperdrive: not a binding kind Launch provisions/)
     expect(problems).toMatch(/routes: Launch owns/)
-    expect(problems).toContain(`"jobs" does not follow {slug}-{suffix} for slug "${slug}"`)
-    expect(problems).toMatch(/differ in shape/)
-  })
-
-  it('a real id committed in the kit', () => {
-    const dir = scratch()
-    edit(dir, 'apps/web/wrangler.toml', t =>
-      t.replace(/id = "<[A-Z_]+>"/, 'id = "0123456789abcdef"')
+    expect(problems).toContain(
+      `"jobs" does not follow {slug}-{suffix} for slug "${FIXTURE_TOKENS.slug}"`
     )
-    expect(failing(checkKit(dir))).toMatch(/must be a <PLACEHOLDER>/)
+    expect(problems).toMatch(/differ in shape/)
   })
 })
 
@@ -233,6 +263,21 @@ describe('kit-check rules (pure)', () => {
     expect(prod).toHaveLength(1)
   })
 
+  it('ids: placeholders in the kit; placeholders or real ids in a copy; real with --provisioned', () => {
+    const at = (id: string) => ({ name: 'acme', main: 'x', kv_namespaces: [{ binding: 'K', id }] })
+    const o = { slug: 'acme', env: 'production' as const, stagingSuffix: '-staging', label: 'p' }
+    expect(tomlProblems(at('<K_ID>'), o)).toEqual([])
+    expect(tomlProblems(at('abc123'), o).join()).toMatch(/must be a <PLACEHOLDER> in the kit/)
+    expect(tomlProblems(at('<K_ID>'), { ...o, isCopy: true })).toEqual([])
+    expect(tomlProblems(at('abc123'), { ...o, isCopy: true })).toEqual([])
+    for (const isCopy of [false, true]) {
+      expect(tomlProblems(at('abc123'), { ...o, isCopy, provisioned: true })).toEqual([])
+      expect(tomlProblems(at('<K_ID>'), { ...o, isCopy, provisioned: true }).join()).toMatch(
+        /still the placeholder/
+      )
+    }
+  })
+
   it('the shape ignores names, ids and var values', () => {
     const p = {
       name: 'acme',
@@ -262,8 +307,7 @@ describe('kit-check rules (pure)', () => {
   })
 
   it('the deploy workflow must finish with if: always()', () => {
-    const text = readFileSync(path.join(REPO_ROOT, '.github/workflows/deploy.yml'), 'utf8')
-    const wf = parseYaml(text.replaceAll(/if: always\(\)( && )?/g, 'if: '))
+    const wf = parseYaml(FIXTURE_DEPLOY_YML.replaceAll(/if: always\(\)( && )?/g, 'if: '))
     const problems = releaseProblems(wf, { file: 'deploy.yml', environmentInput: 'environment' })
     expect(
       problems.some(p => p.includes('if: always()')),

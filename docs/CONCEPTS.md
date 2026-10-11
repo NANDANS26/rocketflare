@@ -605,11 +605,17 @@ cycle). Detail: `packages/shared/CLAUDE.md`.
   plain JS by `scripts/lib/kit-manifest.mjs`. **A copy keeps it**: Launch reads the app's own for
   its sessions, gate and releases, so the rename rewrites it through the token map EXCEPT its `kit`
   block (`renameKitManifest`), and `kit:upgrade` treats it as `manual`. `scripts/kit-check.mjs`
-  (`--exec` also runs the gate list; `--provisioned` wants real ids) is the static conformance check
-  Launch applies before a kit can be picked — shared byte for byte with the meta-kit
-  `rocketflare-dev/launch-kit` (one change lands in both) — run by `kit.yml` on the kit and on the
-  renamed `my-app` copy; `tests/config/launch-kit-manifest.test.ts` checks the VALUES against the
-  bootstrap, the dev server, the tomls and the RLS role.
+  (`--exec` also runs the gate list) is the static conformance check Launch applies before a kit
+  can be picked — shared byte for byte with the meta-kit `rocketflare-dev/launch-kit` (one change
+  lands in both) — run by `kit.yml` on the kit and on the renamed `my-app` copy. Its ids rule knows
+  which it is looking at: the kit's KV ids are `<PLACEHOLDER>`s; a copy's may be placeholders or
+  the real ids Launch's `write_config` commits; `--provisioned` (deploy.yml) wants real ids
+  everywhere. **No test judges the checkout it runs in** — config tests travel into every copy,
+  which Launch renames and provisions: the checker's and the manifest shape's tests run on a fixture
+  kit (`tests/config/fixtures/kit-fixture.mjs`, shared with the meta-kit, which also provisions it
+  the way `write_config` does), the toml patcher's on a snapshot of the shipped tomls; the kit's
+  own files are judged by `kit.yml` and `tests/kit-only/` (`launch-kit-manifest.test.ts` checks the
+  VALUES against the bootstrap, the dev server, the tomls and the RLS role).
 - **A copy's version is its own**: the rename restarts the root `package.json` version at `0.1.0`
   and empties `CHANGELOG.md` (`restartAppVersion`, only while the root version is still the kit's),
   so an app's releases never read as kit releases. Which kit it came from lives in one place,

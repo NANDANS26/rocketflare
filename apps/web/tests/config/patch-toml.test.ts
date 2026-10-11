@@ -1,7 +1,10 @@
 /**
  * `scripts/provision/patch-toml.ts` — string-level patching of the wrangler tomls (config project,
- * no database). Runs against the REAL staging/production toml text on disk so a drift in the
- * files' shape shows up here, and re-checks the parity test's own invariants on the patched pair.
+ * no database). Runs against a SNAPSHOT of the kit's shipped tomls (./fixtures/), never the files on
+ * disk: this test travels into every copy, whose tomls Launch's write_config or `pnpm provision`
+ * has already patched. It re-checks the parity test's own invariants on the patched pair. That the
+ * patcher still finds its targets in THIS kit's shipped tomls is kit-only
+ * (`tests/kit-only/patch-toml-shipped.test.ts`).
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -18,25 +21,8 @@ import {
   tomlPlaceholders,
 } from '../../scripts/provision/patch-toml'
 
-const WEB_DIR = path.resolve(__dirname, '../..')
-/**
- * The tomls on disk may be provisioned already (real ids, an active `routes` line) — this test
- * must pass in both states, so it normalises the disk text back to the shipped shape and proves
- * the patcher round-trips through it.
- */
-function unprovision(text: string, env: 'staging' | 'production'): string {
-  const tag = env === 'staging' ? '_STAGING' : ''
-  return text
-    .replace(
-      /(binding = "HYPERDRIVE"\n(?:[^\n]*\n)*?id = ")[0-9a-f]{32}(")/,
-      `$1<HYPERDRIVE${tag}_ID>$2`
-    )
-    .replace(
-      /(binding = "RATE_LIMIT_KV"\n(?:[^\n]*\n)*?id = ")[0-9a-f]{32}(")/,
-      `$1<KV_RATE_LIMIT${tag}_ID>$2`
-    )
-    .replace(/^routes = \[/m, '# routes = [')
-}
+/** The kit's tomls as shipped (a snapshot: ./fixtures/wrangler{,.staging}.toml). */
+const FIXTURES = path.resolve(__dirname, 'fixtures')
 
 /**
  * The kit's own placeholders. A copy with a plugin installed (D31) carries that plugin's KV
@@ -47,15 +33,8 @@ const kitPlaceholders = (env: 'staging' | 'production') =>
   env === 'staging'
     ? ['<HYPERDRIVE_STAGING_ID>', '<KV_RATE_LIMIT_STAGING_ID>']
     : ['<HYPERDRIVE_ID>', '<KV_RATE_LIMIT_ID>']
-/** The tomls exactly as on disk (unprovisioned): `neon` in the kit, maybe `postgres` in a copy. */
-const shippedStaging = unprovision(
-  fs.readFileSync(path.join(WEB_DIR, 'wrangler.staging.toml'), 'utf8'),
-  'staging'
-)
-const shippedProd = unprovision(
-  fs.readFileSync(path.join(WEB_DIR, 'wrangler.toml'), 'utf8'),
-  'production'
-)
+const shippedStaging = fs.readFileSync(path.join(FIXTURES, 'wrangler.staging.toml'), 'utf8')
+const shippedProd = fs.readFileSync(path.join(FIXTURES, 'wrangler.toml'), 'utf8')
 
 /**
  * The same files under `DATABASE_DRIVER = "postgres"` (D35) — what `pnpm provision cloudflare <env>
@@ -81,7 +60,7 @@ const KV_PROD = '22222222222222222222222222222222'
 
 const commentLines = (text: string) => text.split('\n').filter(l => /^\s*#/.test(l))
 
-describe('patch-toml: the shipped tomls (normalised) carry the placeholders this patcher targets', () => {
+describe('patch-toml: the snapshot carries the placeholders this patcher targets', () => {
   it('staging and production have their four placeholders', () => {
     expect(tomlPlaceholders(stagingText)).toEqual(
       expect.arrayContaining(kitPlaceholders('staging'))
@@ -89,16 +68,6 @@ describe('patch-toml: the shipped tomls (normalised) carry the placeholders this
     expect(tomlPlaceholders(prodText)).toEqual(
       expect.arrayContaining(kitPlaceholders('production'))
     )
-  })
-  it('round-trips: unprovision(patchToml(text)) === text', () => {
-    const patched = patchToml(stagingText, {
-      hyperdriveId: HD_STAGING,
-      kvId: KV_STAGING,
-      routeHost: 'staging.example.test',
-    })
-    expect(unprovision(patched, 'staging')).not.toBe(patched)
-    expect(TOML.parse(unprovision(patched, 'staging'))).toEqual(TOML.parse(stagingText))
-    expect(tomlPlaceholders(unprovision(patched, 'staging'))).toEqual(tomlPlaceholders(stagingText))
   })
 })
 

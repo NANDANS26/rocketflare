@@ -17,9 +17,11 @@
  *                 workflow_dispatch takes the environment input, its jobs hold `id-token: write`,
  *                 run the deployer's start → upload → activate → finish (finish `if: always()`) and
  *                 deploy to the `staging` and `production` environments
- *   tomls         both parse; only provisionable binding kinds; every id a <PLACEHOLDER> (with
- *                 --provisioned: none is); every account-scoped name follows {slug}-{suffix} with
- *                 the staging suffix in staging; the two have the same shape
+ *   tomls         both parse; only provisionable binding kinds; ids: in the kit every one a
+ *                 <PLACEHOLDER>, in a copy a placeholder (not yet provisioned) or a real id (Launch's
+ *                 write_config commits them), with --provisioned none a placeholder; every
+ *                 account-scoped name follows {slug}-{suffix} with the staging suffix in staging;
+ *                 the two have the same shape
  *   provides      (warnings) every var name in launchProvides is read somewhere in the Worker
  *   gate-list     (--exec only) `ci.gateList` prints gate list schema 1 with lint/typecheck/test
  *
@@ -118,8 +120,14 @@ export function scopedNames(toml) {
   return out
 }
 
-/** Problems with one toml: kinds, ids, names. Pure. */
-export function tomlProblems(toml, { slug, env, stagingSuffix, provisioned = false, label }) {
+/**
+ * Problems with one toml: kinds, ids, names. Pure. `isCopy`: an app made from the kit, whose ids
+ * Launch fills in and commits — so a real id is the kit's mistake and a copy's normal state.
+ */
+export function tomlProblems(
+  toml,
+  { slug, env, stagingSuffix, provisioned = false, isCopy = false, label }
+) {
   const problems = []
   const bad = msg => problems.push(`${label}: ${msg}`)
   for (const key of Object.keys(toml)) {
@@ -141,7 +149,7 @@ export function tomlProblems(toml, { slug, env, stagingSuffix, provisioned = fal
       }
       if (provisioned && PLACEHOLDER.test(String(id)))
         bad(`kv_namespaces[${k}].${idKey}: still the placeholder ${id}`)
-      if (!provisioned && !PLACEHOLDER.test(String(id)))
+      if (!provisioned && !isCopy && !PLACEHOLDER.test(String(id)))
         bad(`kv_namespaces[${k}].${idKey}: must be a <PLACEHOLDER> in the kit, got ${id}`)
     }
   }
@@ -449,7 +457,14 @@ export function checkKit(dir, { provisioned = false, exec = false } = {}) {
     try {
       parsed[env] = parseToml(read(rel))
       tomlIssues.push(
-        ...tomlProblems(parsed[env], { slug, env, stagingSuffix, provisioned, label: rel })
+        ...tomlProblems(parsed[env], {
+          slug,
+          env,
+          stagingSuffix,
+          provisioned,
+          isCopy,
+          label: rel,
+        })
       )
     } catch (err) {
       tomlIssues.push(`${rel}: ${err.message}`)

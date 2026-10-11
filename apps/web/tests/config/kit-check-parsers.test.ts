@@ -1,15 +1,13 @@
 /**
  * The two dependency-free readers `scripts/kit-check.mjs` parses the tomls and the workflows with
  * (`scripts/lib/toml-lite.mjs`, `scripts/lib/yaml-lite.mjs`), shared with the meta-kit — its
- * `scripts/tests/parsers.test.mjs`, ported to vitest. The `config` project: no database.
+ * `scripts/tests/parsers.test.mjs`, ported to vitest. Inline documents only: that this checkout's
+ * own tomls and workflows parse is kit-only (`tests/kit-only/kit-files-parse.test.ts`). The
+ * `config` project: no database.
  */
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseToml, TomlError } from '../../../../scripts/lib/toml-lite.mjs'
 import { parseYaml } from '../../../../scripts/lib/yaml-lite.mjs'
-
-const REPO_ROOT = path.resolve(__dirname, '../../../..')
 
 describe('toml-lite', () => {
   it('reads tables, arrays of tables, strings, arrays and inline tables', () => {
@@ -48,13 +46,6 @@ queue = "app-jobs"
     expect(() => parseToml('a = 1\na = 2')).toThrow(TomlError)
     expect(() => parseToml('a = "open')).toThrow(TomlError)
   })
-
-  it('parses both of the app tomls', () => {
-    for (const f of ['wrangler.toml', 'wrangler.staging.toml']) {
-      const doc = parseToml(readFileSync(path.join(REPO_ROOT, 'apps/web', f), 'utf8'))
-      expect(doc.main).toBe('src/worker.ts')
-    }
-  })
 })
 
 describe('yaml-lite', () => {
@@ -87,12 +78,5 @@ jobs:
     expect(doc.jobs.gate.if).toBe('a &&\nb\n')
     expect(doc.jobs.gate.steps[0].with['fetch-depth']).toBe('0')
     expect(doc.jobs.gate.steps[1].run).toBe('echo "a: b"')
-  })
-
-  it('parses ci.yml and deploy.yml, which a copy carries', () => {
-    for (const f of ['ci.yml', 'deploy.yml']) {
-      const doc = parseYaml(readFileSync(path.join(REPO_ROOT, '.github/workflows', f), 'utf8'))
-      expect(doc.jobs && Object.keys(doc.jobs).length > 0, f).toBe(true)
-    }
   })
 })

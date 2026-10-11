@@ -40,6 +40,11 @@ and unwires `--project kit-only`; the project is registered only while the direc
 `kit:upgrade` never ports one; `tests/config/kit-manifest.test.ts` fails a copy that carries one.
 A test of tooling a copy RUNS (upgrade, plugin, bootstrap, the update-check hook, the manifest
 reader) or of anything the app ships stays in `config` — the copy's gate is where it earns its keep.
+Such a test never judges the checkout's own state — its tomls, `launch.kit.json`, version or
+provisioning — because a copy's differ by design (renamed, then provisioned by Launch, which
+commits real KV ids). Build a fixture (`tests/config/fixtures/`: `kit-fixture.mjs` makes a whole
+kit, fresh or provisioned like Launch's `write_config`; the toml snapshots feed the patcher's
+tests), and put the claim about THIS checkout in `kit-only`.
 
 ## Tests run under Node, against the real Hono app
 

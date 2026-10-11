@@ -18,12 +18,14 @@ export interface TomlRuleOptions {
   env: 'production' | 'staging'
   stagingSuffix: string
   provisioned?: boolean
+  /** An app made from the kit: its ids may be real (Launch commits them) or placeholders. */
+  isCopy?: boolean
   label: string
 }
 export function tomlProblems(toml: Record<string, unknown>, options: TomlRuleOptions): string[]
 export function tomlShape(
   toml: Record<string, unknown>,
-  options: Omit<TomlRuleOptions, 'label' | 'provisioned'>
+  options: Omit<TomlRuleOptions, 'label' | 'provisioned' | 'isCopy'>
 ): Record<string, unknown>
 export function diffPaths(a: unknown, b: unknown, at?: string, out?: string[]): string[]
 

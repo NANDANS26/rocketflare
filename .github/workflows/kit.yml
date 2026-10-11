@@ -8,7 +8,8 @@ name: Kit
 #               change carries its porting note, `defaultPlugins` is well formed, the kit conforms
 #               to the Launch kit contract (launch.kit.json, D36) — no database;
 #   renamed     the gate on the checkout renamed to a HYPHENATED slug, as every copy is born, and
-#               the copy's own Launch kit check;
+#               then provisioned as Launch's write_config does it, with the copy's own Launch kit
+#               check in both states;
 #   plugins     the gate with every `defaultPlugins` entry installed, and the WHOLE suite under
 #               `neon` — the backstop for the driver seam, which a copy's gate proves through the
 #               conformance pass alone (apps/web/src/db/CLAUDE.md).
@@ -137,6 +138,20 @@ jobs:
       # must conform too: names checked against `my-app`, the kit block still the kit's.
       - name: The renamed copy conforms to the Launch kit contract
         run: node scripts/kit-check.mjs --exec
+      # Then the state every app Launch deploys is in: its `write_config` commits real KV ids, its
+      # vars and `workers_dev = false` into both tomls (0.18.1 — a copy's tests judged its own
+      # placeholders, so every provisioned copy failed its Gate). The gate below runs on THAT tree.
+      - name: Provision the copy as Launch's write_config does
+        run: |
+          set -euo pipefail
+          node --input-type=module -e \
+            "const m = await import('./apps/web/tests/config/fixtures/kit-fixture.mjs'); console.log(m.provisionLikeLaunch('.'))"
+          git diff --stat
+          git add -A
+          git -c user.name=ci -c user.email=ci@example.com -c commit.gpgsign=false \
+            commit --quiet --no-verify -m "Provision as Launch does"
+      - name: The provisioned copy conforms (--provisioned)
+        run: node scripts/kit-check.mjs --provisioned
       # The renamed compose file names the renamed database (`my_app_test`); `pnpm test` starts it.
       - run: pnpm gate
 

@@ -4,7 +4,7 @@ previous: 0.18.0
 date: null
 breaking: false
 migrations: []
-areas: []
+areas: [config, docs]
 touches_surfaces: []
 requires_surfaces: []
 manual: false
@@ -12,20 +12,31 @@ manual: false
 
 ## What changed
 
-_Nothing yet. Add an entry here in the same pull request as the change. This first paragraph is
-lifted VERBATIM into `CHANGELOG.md`, so make it ONE standalone summary sentence of ≤ 40 words —
-then one bullet per change, one line each, and no `###` sub-headings. Rationale belongs in
-`docs/CONCEPTS.md` and is linked, never restated; see `README.md` beside this file._
+`scripts/kit-check.mjs` accepts a copy Launch has provisioned, and no config test judges the checkout it runs in, so a copy whose tomls carry Launch's real KV ids passes its own Gate.
+
+- `scripts/kit-check.mjs` → in the kit every KV id is a `<PLACEHOLDER>`; in a copy an id may be a placeholder or real; `--provisioned` still wants real ids (`docs/CONCEPTS.md` §13).
+- `apps/web/tests/config/kit-check.test.ts` → every case on a fixture kit, fresh and provisioned the way Launch's `write_config` does it (`tests/config/fixtures/kit-fixture.mjs`, shared with the meta-kit).
+- `apps/web/tests/config/launch-kit-manifest.test.ts` → the shape cases on the fixture's manifest; the checks of this kit's own manifest values move to `tests/kit-only/launch-kit-manifest.test.ts`.
+- `apps/web/tests/config/kit-check-parsers.test.ts` → inline documents only; parsing the kit's own tomls and workflows moves to `tests/kit-only/kit-files-parse.test.ts`.
+- `apps/web/tests/config/patch-toml.test.ts` → runs on a snapshot of the shipped tomls (`tests/config/fixtures/wrangler{,.staging}.toml`), which `tests/kit-only/patch-toml-shipped.test.ts` holds equal to the kit's.
 
 ## How to apply
 
-_Numbered, imperative, each step self-contained — no "these", "them" or "the above" reaching
-outside its own step._
+1. Copy `scripts/kit-check.mjs` and `scripts/kit-check.d.mts` from the kit over your own; neither names the app.
+2. Copy `apps/web/tests/config/fixtures/kit-fixture.mjs` and `apps/web/tests/config/fixtures/kit-fixture.d.mts` from the kit into the same paths.
+3. Copy `apps/web/tests/config/kit-check.test.ts`, `apps/web/tests/config/kit-check-parsers.test.ts` and `apps/web/tests/config/launch-kit-manifest.test.ts` from the kit over your own.
+4. Copy `apps/web/tests/config/patch-toml.test.ts` from the kit over your own, and copy the kit's UNPROVISIONED `apps/web/wrangler.toml` and `apps/web/wrangler.staging.toml` (the release tag's, renamed to your app the way `kit:upgrade` renames any file) to `apps/web/tests/config/fixtures/wrangler.toml` and `apps/web/tests/config/fixtures/wrangler.staging.toml`, each with the kit snapshot's two-line `# FIXTURE` header. Never copy your provisioned tomls there.
+5. Do not copy anything under `apps/web/tests/kit-only/`: those tests are the kit's own, and a copy runs none of them.
+6. Leave your own `apps/web/wrangler.toml` and `apps/web/wrangler.staging.toml` as they are: real KV ids are now valid in a copy.
 
 ## Conflicts to expect
 
-_One line each: `path → what changed → what to do`. Or exactly `None.`_
+- `apps/web/tests/config/patch-toml.test.ts` → reads `./fixtures/` instead of the tomls on disk → take the kit's file whole.
+- `apps/web/tests/config/launch-kit-manifest.test.ts` → the live-file half moved to kit-only → take the kit's file whole.
 
 ## Verify
 
-_Numbered checkable commands and assertions only._
+1. `node scripts/kit-check.mjs` prints `✔ conforms to the Launch kit contract (schema 1)` and exits 0.
+2. Once Launch has provisioned the app, `node scripts/kit-check.mjs --provisioned` exits 0.
+3. `pnpm --filter ./apps/web test:config` passes.
+4. `pnpm gate` passes.
