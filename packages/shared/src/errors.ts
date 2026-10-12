@@ -38,6 +38,14 @@ export const ERROR_CODES = {
   agentRunsNotConfigured: 'agent_runs_not_configured',
   /** 409: `?strict=1` and an active run already exists for an exclusive agent (D7). */
   agentRunActive: 'agent_run_active',
+  /** 429: the tenant already has `AGENT_MAX_ACTIVE_RUNS_PER_TENANT` runs queued, running or parked (D39). */
+  agentRunsLimit: 'agent_runs_limit',
+  /** 400: `POST /api/agents/runs/batch` named an exclusive agent — one run at a time cannot batch (D39). */
+  agentExclusive: 'agent_exclusive',
+  /** 429: the tenant's agent spend today has reached `AGENT_TENANT_DAILY_COST_USD` (D39). */
+  aiBudgetExceeded: 'ai_budget_exceeded',
+  /** Event code, not a status: a run stopped because it reached its token or cost budget (D39). */
+  agentBudgetExceeded: 'agent_budget_exceeded',
   /** 404: `POST /api/agui/run` was given a `threadId` that exists but is not this user's. */
   aguiThreadNotFound: 'agui_thread_not_found',
   /** 400: the last message of a `RunAgentInput` was not a user turn. */

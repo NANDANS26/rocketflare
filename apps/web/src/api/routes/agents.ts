@@ -2,7 +2,10 @@
  * `/api/agents` (D7): the registry and its runs. `POST /runs` is the handoff — validate → insert
  * `queued` → create the Workflow instance → 202 with the row (the route never runs the agent). An
  * exclusive agent with an active run answers THAT run with `deduplicated: true` (409
- * `agent_run_active` only with `?strict=1`).
+ * `agent_run_active` only with `?strict=1`). `POST /runs/batch` (D39) is the same handoff for up to
+ * 100 inputs of one NON-exclusive agent (400 `agent_exclusive` otherwise), with per-input errors;
+ * both answer 429 `agent_runs_limit` over `AGENT_MAX_ACTIVE_RUNS_PER_TENANT` and 429
+ * `ai_budget_exceeded` once the tenant's agent spend today reaches its cap.
  *
  * `GET /runs/:id` returns the row, its durable events, its asks and its artifacts — **in that
  * order, and the order is the contract**: read the log, then `settleOnRead` (a stale active row
@@ -23,6 +26,8 @@ import {
   type AgentRun,
   type AgentRunWithEvents,
   agentRunListQuerySchema,
+  type CreateAgentRunBatchResponse,
+  createAgentRunBatchRequestSchema,
   createAgentRunRequestSchema,
   isRunActive,
 } from '@rocketflare/shared/ai/agents'
@@ -55,6 +60,7 @@ import { streamRunAgui } from '../services/agents/run-stream'
 import {
   appendEventAtomic,
   enqueueRun,
+  enqueueRunBatch,
   expireParkedRun,
   getRun,
   listEvents,
@@ -67,6 +73,7 @@ import {
   toAgentRun,
   toAgentRunEvent,
 } from '../services/agents/runs'
+import { runSpend } from '../services/ai/usage'
 import type { AppContext, AuthContext } from '../types'
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../utils/core/errors'
 import { pageWindow, paginated } from '../utils/routes/pagination'
@@ -160,7 +167,8 @@ agentsRouter.get('/runs', validate('query', agentRunListQuerySchema), async c =>
     eq(agentRuns.tenantId, tenantId),
     isAdminLevel(auth) ? undefined : eq(agentRuns.requestedByUserId, user.id),
     query.agentKey ? eq(agentRuns.agentKey, query.agentKey) : undefined,
-    query.status ? eq(agentRuns.status, query.status) : undefined
+    query.status ? eq(agentRuns.status, query.status) : undefined,
+    query.batchId ? eq(agentRuns.batchId, query.batchId) : undefined
   )
   const [rows, [total]] = await Promise.all([
     db
@@ -178,11 +186,11 @@ agentsRouter.get('/runs', validate('query', agentRunListQuerySchema), async c =>
 // ---- POST /api/agents/runs ------------------------------------------------------------------------
 
 agentsRouter.post('/runs', validate('json', createAgentRunRequestSchema), async c => {
-  const { db, tenantId, user, defer, realtime } = withAuthAndDb(c)
+  const { db, cfg, tenantId, user, defer, realtime } = withAuthAndDb(c)
   guardPermission(c, 'create', 'AgentRun')
   const { agentKey, input } = c.req.valid('json')
   const strict = c.req.query('strict') === '1'
-  const { run, deduplicated } = await enqueueRun(db, c.env, {
+  const { run, deduplicated } = await enqueueRun(db, cfg, c.env, {
     tenantId,
     agentKey,
     input,
@@ -211,6 +219,52 @@ agentsRouter.post('/runs', validate('json', createAgentRunRequestSchema), async 
   return c.json({ ...toAgentRun(run), deduplicated }, 202)
 })
 
+// ---- POST /api/agents/runs/batch ------------------------------------------------------------------
+
+/**
+ * D39: up to `AGENT_RUN_BATCH_MAX` runs of one non-exclusive agent. 202 even when some inputs
+ * failed — the items say which, by index — because the rest are already running and a 4xx would
+ * read as "nothing happened". A whole-batch refusal (exclusive agent, cap, budget) is still a 4xx
+ * and writes nothing. One activity row for the batch, not one per run.
+ */
+agentsRouter.post('/runs/batch', validate('json', createAgentRunBatchRequestSchema), async c => {
+  const { db, cfg, tenantId, user, defer, realtime } = withAuthAndDb(c)
+  guardPermission(c, 'create', 'AgentRun')
+  const { agentKey, inputs } = c.req.valid('json')
+  const { batchId, items } = await enqueueRunBatch(db, cfg, c.env, {
+    tenantId,
+    agentKey,
+    inputs,
+    userId: user.id,
+    realtime,
+  })
+  const created = items.filter(item => item.error === null).length
+  if (created > 0) {
+    defer(() =>
+      recordActivity(db, {
+        tenantId,
+        userId: user.id,
+        type: 'agent_run.batch_requested',
+        subjectType: 'AgentRun',
+        subjectId: batchId,
+        metadata: { agentKey, batchId, created, failed: items.length - created },
+      })
+    )
+  }
+  const body: CreateAgentRunBatchResponse = {
+    batchId,
+    agentKey,
+    created,
+    failed: items.length - created,
+    items: items.map(item => ({
+      index: item.index,
+      run: item.row ? toAgentRun(item.row) : null,
+      error: item.error,
+    })),
+  }
+  return c.json(body, 202)
+})
+
 // ---- GET /api/agents/runs/:id ---------------------------------------------------------------------
 
 agentsRouter.get('/runs/:id', async c => {
@@ -229,10 +283,11 @@ agentsRouter.get('/runs/:id', async c => {
   // read AFTER it, because `expireParkedRun` is exactly the thing that rewrites them.
   const events = await listEvents(db, tenantId, row.id)
   const run = await settleOnRead(c, row, { lastEventAt: events.at(-1)?.at ?? null })
-  const [interrupts, artifacts, decisions] = await Promise.all([
+  const [interrupts, artifacts, decisions, usage] = await Promise.all([
     listInterrupts(db, tenantId, run.id),
     listArtifacts(db, tenantId, run.id),
     listDecisions(db, tenantId, run.id),
+    runSpend(db, tenantId, run.id),
   ])
   const body: AgentRunWithEvents = {
     ...toAgentRun(run),
@@ -240,6 +295,7 @@ agentsRouter.get('/runs/:id', async c => {
     interrupts: interrupts.map(toAgentRunInterrupt),
     artifacts: artifacts.map(toAgentArtifact),
     decisions,
+    usage,
   }
   return c.json(body)
 })

@@ -398,14 +398,38 @@ export class RecordingWorkflow {
   /** Make `sendEvent` fail the way a retention-expired or dev-restarted instance does. */
   notFoundOnSendEvent = false
   defaultStatus: FakeInstanceStatus = { status: 'running' }
+  /** The size of every `createBatch()` call that landed, in order (D39). */
+  readonly batches: number[] = []
+  /**
+   * Fail one instance's creation — consulted by `create()` AND, for every member, by
+   * `createBatch()`, which then fails WHOLE like the platform's (one bad id, nothing created).
+   */
+  failCreate: ((options: { id: string; params?: unknown }) => boolean) | null = null
 
   async create(options: { id?: string; params?: unknown } = {}) {
     const id = options.id ?? crypto.randomUUID()
     if (this.created.some(c => c.id === id)) {
       throw new Error(`instance.already_exists: an instance with id ${id} already exists`)
     }
+    if (this.failCreate?.({ id, params: options.params })) {
+      throw new Error(`workflow.internal_error: could not create ${id}`)
+    }
     this.created.push({ id, params: options.params })
     return this.instance(id)
+  }
+
+  async createBatch(batch: { id: string; params?: unknown }[]) {
+    for (const options of batch) {
+      if (this.created.some(c => c.id === options.id)) {
+        throw new Error(`instance.already_exists: an instance with id ${options.id} already exists`)
+      }
+      if (this.failCreate?.(options)) {
+        throw new Error(`workflow.internal_error: could not create ${options.id}`)
+      }
+    }
+    for (const options of batch) this.created.push({ id: options.id, params: options.params })
+    this.batches.push(batch.length)
+    return batch.map(options => this.instance(options.id))
   }
 
   async get(id: string) {
@@ -445,6 +469,8 @@ export class RecordingWorkflow {
 
   clear(): void {
     this.created.length = 0
+    this.batches.length = 0
+    this.failCreate = null
     this.terminated.length = 0
     this.events.length = 0
     this.statusCalls.length = 0

@@ -42,13 +42,11 @@ import {
   researchTopicInputSchema,
   researchTopicOutputSchema,
 } from '@rocketflare/shared/ai/agents'
-import type { TokenUsage } from '@rocketflare/shared/ai/chat'
 import { choicePayloadSchema } from '@rocketflare/shared/ai/interrupts'
 import { z } from 'zod'
 import { ingestText } from '../../ai/ingest'
 import { callStructuredTool, runToolLoop, type Tool } from '../../ai/kit'
 import type { ChatMessage } from '../../ai/types'
-import { recordUsage } from '../../ai/usage'
 import type { AgentContext, AgentDefinition } from '../registry'
 import { summariseToolResult } from '../tools'
 
@@ -298,20 +296,8 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
     const messages: ChatMessage[] = [{ role: 'user', content: `Research this: ${topic}` }]
     /** documentId → title, from the tools' own answers. */
     const seen = new Map<string, string>()
-    /**
-     * Written the moment tokens are spent, not at the end: a failed salvage or a cancellation
-     * between turns must still leave the loop's tokens in the ledger. (`runToolLoop` has no
-     * per-turn usage tap, so a cancel mid-loop still loses that run's tokens — a kit gap.)
-     */
-    const ledger = (usage: TokenUsage) =>
-      recordUsage(ctx.db, {
-        tenantId: ctx.tenantId,
-        userId: ctx.userId,
-        feature: 'agent:research-topic',
-        provider: ctx.chat.client.provider,
-        model: ctx.chat.model,
-        usage,
-      }).catch(err => ctx.logger.warn({ err }, 'research-topic: usage write failed'))
+    // No ledger code here (D39): `ctx.chat.client` is metered by the runtime, so every turn of the
+    // loop and the salvage below writes its own `ai_usage` row, carrying this run's id, as it returns.
 
     // A retried `execute` step re-enters `run()` from the top; the checkpoint is what stops it
     // paying for every turn again. Null on a first attempt (or an unreadable stored value).
@@ -398,11 +384,6 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
         }
       },
     })
-    // Once per run, not once per attempt: `loop.usage` includes the resumed attempts' tokens.
-    await ctx.once('loop-usage', async () => {
-      await ledger(loop.usage)
-      return { inputTokens: loop.usage.inputTokens, outputTokens: loop.usage.outputTokens }
-    })
     await ctx.step(
       'research',
       'Searching the knowledge base',
@@ -430,8 +411,6 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
         // The loop just sent this transcript with rolling breakpoints, so on a caching provider
         // (Anthropic) the recovery reads the prefix instead of paying for it twice.
         cache: true,
-        // Fires before `callStructuredTool` throws, so a failed recovery is still ledgered.
-        onUsage: extra => void ledger(extra),
       })
     }
 

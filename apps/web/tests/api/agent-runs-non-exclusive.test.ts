@@ -17,6 +17,7 @@ import { createAgentRunResponseSchema } from '@rocketflare/shared/ai/agents'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it, vi } from 'vitest'
 import { enqueueRun } from '@/api/services/agents/runs'
+import { loadConfig } from '@/config'
 import { agentRuns } from '@/db/schema'
 import { createTestSession, createTestTenantWithUser, sessionCookieHeader } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
@@ -104,7 +105,7 @@ describe('per-key slots (enqueueRun({ concurrencyKey }))', () => {
     const { user, tenant } = await createTestTenantWithUser(db, 'member')
     const env = createTestEnv()
     const enqueue = (concurrencyKey: string, text: string) =>
-      enqueueRun(db, env, {
+      enqueueRun(db, loadConfig(env), env, {
         tenantId: tenant.id,
         agentKey: 'summarize-text',
         input: { text },
@@ -127,7 +128,7 @@ describe('per-key slots (enqueueRun({ concurrencyKey }))', () => {
     const { user, tenant } = await createTestTenantWithUser(db, 'member')
     const env = createTestEnv()
     const enqueue = (concurrencyKey: string | undefined, topic: string) =>
-      enqueueRun(db, env, {
+      enqueueRun(db, loadConfig(env), env, {
         tenantId: tenant.id,
         agentKey: 'research-topic',
         input: { topic },

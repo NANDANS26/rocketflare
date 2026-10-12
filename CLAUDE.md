@@ -127,7 +127,7 @@ written justification, and `apps/web/tests/config/shared-imports.test.ts` enforc
 **`apps/cli`.** `login` opens `GET /auth/cli?redirect_uri=http://127.0.0.1:<port>/callback`; the server
 mints a tenant API key `cli:<host>` → `?key=&tenant_id=&tenant_name=`; stored `0600` in
 `~/.rocketflare/config.json` (`ROCKETFLARE_API_KEY`/`ROCKETFLARE_URL` for CI). Also `logout|whoami|status|config`,
-`members|keys|activity list --json` (`.claude/rules/cli.md`)
+`members|keys|activity list --json`, `agents run <key> --input|--batch` (D39) (`.claude/rules/cli.md`)
 
 ## Config model
 
@@ -136,6 +136,8 @@ mints a tenant API key `cli:<host>` → `?key=&tenant_id=&tenant_name=`; stored 
 `SIGNUP_MODE` (`open|invite_only|approval`; `BOOTSTRAP_ADMIN_EMAILS` seeds the first admin) ·
 `TENANT_SCOPE_MODE` (`off|enforce`, `docs/RLS.md`) · `DATABASE_DRIVER` (`neon|postgres`, D35; missing =
 `postgres`, `neon` needs the `DATABASE_URL` secret; `.dev.vars` overrides locally, with `NEON_LOCAL_PROXY`) · `AGENT_MAX_OUTPUT_TOKENS` · `AGENT_MAX_TURNS` ·
+`AGENT_MAX_ACTIVE_RUNS_PER_TENANT` (50; 429 above) · `AGENT_RUN_MAX_TOKENS` / `AGENT_RUN_MAX_COST_USD` /
+`AGENT_TENANT_DAILY_COST_USD` (D39 budgets, unset = no cap; `meta.budget` overrides per agent) ·
 `CHAT_KNOWLEDGE_TOOLS` (`true|false` — chat may call the knowledge tools) ·
 `CHAT_HISTORY_MAX_CHARS` (history a turn replays; older turns are summarised by `chat.compact`) ·
 `FEATURES_ENABLED` (D30 — comma-separated feature keys this deployment ships at all; fail-closed,

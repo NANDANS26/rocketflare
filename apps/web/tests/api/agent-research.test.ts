@@ -4,7 +4,8 @@
  * `research-topic` (D7, D18) — the agentic agent, driven through the real runtime against Postgres
  * with a `FakeChatClient` scripting the turns and a really-ingested document behind
  * `search_knowledge`: the loop searches, then calls the terminal `submit_answer`; the run succeeds
- * with the answer, the citation resolved to the real document, `ai_usage` summed over both turns
+ * with the answer, the citation resolved to the real document, one `ai_usage` row per turn carrying
+ * the run id (D39 — the runtime's meter, not the agent, writes them)
  * and the tool events persisted. Also the two decisions in the agent's header: a citation naming a
  * document search never returned is DROPPED, and a loop that ends in prose is salvaged by one
  * forced `submit_answer` call instead of failing.
@@ -79,7 +80,7 @@ async function tenantWithDocument(env: TestEnv) {
 
 /** Enqueue and run the agent through claim → execute (the workflow steps' bodies). */
 async function runResearch(env: TestEnv, tenantId: string, userId: string, topic: string) {
-  const params = await enqueueRun(db, env, {
+  const params = await enqueueRun(db, loadConfig(env), env, {
     tenantId,
     agentKey: 'research-topic',
     input: { topic },
@@ -180,14 +181,14 @@ describe('research-topic agent', () => {
     expect(toolNames).toEqual(['search_knowledge', 'search_knowledge'])
     expect(events.some(e => e.type === 'text')).toBe(false)
 
-    // Usage is the sum of both turns, under the agent's feature key.
+    // One row per turn (D39), each billed to the run under the agent's feature key.
     const usage = await db.query.aiUsage.findMany({ where: eq(aiUsage.tenantId, tenant.id) })
-    expect(usage).toHaveLength(1)
-    expect(usage[0]).toMatchObject({
-      feature: 'agent:research-topic',
-      inputTokens: 100,
-      outputTokens: 30,
-    })
+    expect(usage).toHaveLength(2)
+    expect(usage.every(u => u.feature === 'agent:research-topic' && u.agentRunId === runId)).toBe(
+      true
+    )
+    expect(usage.reduce((n, u) => n + u.inputTokens, 0)).toBe(100)
+    expect(usage.reduce((n, u) => n + u.outputTokens, 0)).toBe(30)
   })
 
   it('drops a citation naming a document the search never returned', async () => {
@@ -240,8 +241,8 @@ describe('research-topic agent', () => {
 
     expect(outcome.status).toBe('succeeded')
     expect(client.calls[1]?.toolChoice).toEqual({ type: 'tool', name: 'submit_answer' })
-    // Two ledger rows: the loop is written as soon as its tokens are spent, the recovery from its
-    // own `onUsage` — so a recovery that FAILED would still leave the loop's tokens recorded.
+    // Two ledger rows, one per call: the loop's turn and the recovery — each written by the meter
+    // as it returned, so a recovery that FAILED would still leave the loop's tokens recorded.
     const usage = await db.query.aiUsage.findMany({ where: eq(aiUsage.tenantId, tenant.id) })
     expect(usage).toHaveLength(2)
     expect(usage.every(u => u.feature === 'agent:research-topic')).toBe(true)
@@ -269,7 +270,7 @@ describe('research-topic agent', () => {
       },
       { error: new AiError('unavailable', 'anthropic_compatible', 'provider overloaded') },
     ])
-    const { run } = await enqueueRun(db, env, {
+    const { run } = await enqueueRun(db, loadConfig(env), env, {
       tenantId: tenant.id,
       agentKey: 'research-topic',
       input: { topic: 'Who reviews access requests?' },
@@ -314,15 +315,19 @@ describe('research-topic agent', () => {
     // document found before the retry is not mistaken for a hallucination.
     expect(output.citations).toEqual([{ documentId: document.id, title: 'Onboarding handbook' }])
 
-    // Ledgered ONCE for the whole run, summing both attempts — `ctx.once` is what stops the
-    // resumed attempt writing the loop's tokens a second time.
+    // One row per call that RETURNED, across both attempts (D39): attempt 1's turn was ledgered
+    // the moment it came back, the failed call cost nothing, and the resumed attempt's turn is the
+    // second row — the carried-forward checkpoint usage is never written again.
     const usage = await db.query.aiUsage.findMany({ where: eq(aiUsage.tenantId, tenant.id) })
-    expect(usage).toHaveLength(1)
-    expect(usage[0]).toMatchObject({ inputTokens: 100, outputTokens: 30 })
+    expect(usage.map(u => [u.inputTokens, u.outputTokens]).sort((a, b) => a[0]! - b[0]!)).toEqual([
+      [40, 10],
+      [60, 20],
+    ])
+    expect(usage.every(u => u.agentRunId === run.id)).toBe(true)
     const effects = await db.query.agentRunEffects.findMany({
       where: eq(agentRunEffects.runId, run.id),
     })
-    expect(effects.map(e => e.key)).toEqual(['loop-usage'])
+    expect(effects).toEqual([])
 
     // Settling drops the checkpoint: nothing will resume, and the transcript is not a record.
     const settled = await db.query.agentRuns.findFirst({ where: eq(agentRuns.id, run.id) })
@@ -343,7 +348,7 @@ describe('research-topic agent', () => {
         ],
       },
     ])
-    const { run } = await enqueueRun(db, env, {
+    const { run } = await enqueueRun(db, loadConfig(env), env, {
       tenantId: tenant.id,
       agentKey: 'research-topic',
       input: { topic: 'Anything?' },

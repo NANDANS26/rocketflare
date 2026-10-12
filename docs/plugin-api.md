@@ -303,7 +303,8 @@ The server surface: the context family, and the types a plugin must be able to n
   Everything a service needs to nudge: how to defer, and the hub binding. Built by `withAuth`.
 - `function realtimeEvent( type: RealtimeEventType, tenantId: string, payload?: unknown ): RealtimeEvent`
 - `async function recordActivity(db: Database, input: ActivityInput): Promise<void>`
-- `async function recordUsage(db: Database, input: UsageInput): Promise<void>`
+- `async function recordUsage(db: Database, input: UsageInput): Promise<number \| null>`
+  Returns the cost it froze onto the row (null when the model has no price).
 - `function requestCtx(c: AppContext): RequestCtx`
   Build a plugin's request context from the kit's.
 - `interface RequestCtx extends PluginContext, PluginAuth`
@@ -1143,7 +1144,7 @@ nothing in the comparison that can throw.
 @/plugins/api :: interface :: Realtime :: interface Realtime
 @/plugins/api :: function :: realtimeEvent :: function realtimeEvent( type: RealtimeEventType, tenantId: string, payload?: unknown ): RealtimeEvent
 @/plugins/api :: function :: recordActivity :: async function recordActivity(db: Database, input: ActivityInput): Promise<void>
-@/plugins/api :: function :: recordUsage :: async function recordUsage(db: Database, input: UsageInput): Promise<void>
+@/plugins/api :: function :: recordUsage :: async function recordUsage(db: Database, input: UsageInput): Promise<number | null>
 @/plugins/api :: function :: requestCtx :: function requestCtx(c: AppContext): RequestCtx
 @/plugins/api :: interface :: RequestCtx :: interface RequestCtx extends PluginContext, PluginAuth
 @/plugins/api :: member :: RequestCtx.scope :: readonly scope: AccessScope

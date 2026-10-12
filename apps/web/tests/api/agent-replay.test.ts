@@ -130,7 +130,7 @@ async function recordedRun(env: TestEnv) {
       ],
     },
   ])
-  const { run } = await enqueueRun(db, env, {
+  const { run } = await enqueueRun(db, loadConfig(env), env, {
     tenantId: tenant.id,
     agentKey: 'triage-research',
     input: { question: QUESTION },
@@ -361,8 +361,8 @@ describe('replay (D38)', () => {
     ])
     expect(result.verdict).toBe('differs')
     expect(result.liveUsage?.inputTokens).toBe(100)
-    // The answer call's own usage write was refused, not recorded.
-    expect(result.writes).toEqual(['insert ai_usage'])
+    // No write was even attempted: the ledger is the runtime's meter (D39), which a replay has not.
+    expect(result.writes).toEqual([])
   })
 })
 

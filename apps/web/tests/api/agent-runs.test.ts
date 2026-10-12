@@ -82,7 +82,7 @@ describe('GET /api/agents', () => {
       expect.objectContaining({
         key: 'triage-research',
         promptKey: 'triage-research',
-        exclusive: true,
+        exclusive: false,
         title: expect.any(String),
       }),
     ])

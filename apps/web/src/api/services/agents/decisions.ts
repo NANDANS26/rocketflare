@@ -35,7 +35,7 @@ import { traceStep } from '../../observability/context'
 import { decisionAttributes } from '../../observability/genai-attributes'
 import { hashToken } from '../../utils/core/hash'
 import type { ResolvedDecisions } from '../ai/resolve'
-import { recordUsage } from '../ai/usage'
+import type { RunMeter } from './budget'
 
 /** Most items one `sift` asks about — TypeSafe's per-request question budget, with headroom. */
 export const SIFT_MAX_ITEMS = 100
@@ -110,6 +110,11 @@ export interface DecideDeps {
   agentKey: string
   /** Resolved on first use, not per attempt — an agent that never decides never resolves. */
   resolve: () => Promise<ResolvedDecisions>
+  /**
+   * The run's meter (D39): checked before every FRESH ask (a replayed answer costs nothing) and
+   * written after it — one `ai_usage` row, `agent:<key>:decide`, carrying the run id.
+   */
+  meter: RunMeter
   /** Thin `decision` event into the run's log. */
   emit: (data: unknown) => Promise<void>
 }
@@ -155,6 +160,7 @@ export function createDecide(deps: DecideDeps): AgentDecide {
     }
 
     const { client, model, provider, method } = await engine()
+    await deps.meter.check()
     return traceStep(
       {
         name: `decide ${key}`,
@@ -186,9 +192,7 @@ export function createDecide(deps: DecideDeps): AgentDecide {
           questionsHash: hash,
           latencyMs,
         })
-        await recordUsage(deps.db, {
-          tenantId: deps.tenantId,
-          userId: deps.userId,
+        await deps.meter.record({
           feature: `agent:${deps.agentKey}:decide`,
           provider,
           model: result.model,

@@ -442,6 +442,27 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   status; exit 1 unless every run matches. `--candidate <file>` replays another definition with the
   same key — how a compiled variant is proven against the full agent's history. Local script only:
   no route, no UI. Why: D37 made the judgments recorded; replay makes the CODE around them testable.
+- **Volume (D39)**: an agent is exclusive only if its meta says so. `agent_runs.exclusive` is
+  copied from `meta.exclusive` at enqueue, and the unique index is `exclusive AND active`, so a
+  non-exclusive agent (`triage-research`) runs any number at once. Two tenant-wide gates sit on
+  every enqueue: `AGENT_MAX_ACTIVE_RUNS_PER_TENANT` (default 50, 429 `agent_runs_limit` — a soft
+  cap, counted then inserted) and `AGENT_TENANT_DAILY_COST_USD` (429 `ai_budget_exceeded`).
+  `POST /api/agents/runs/batch` takes up to 100 inputs of one non-exclusive agent (400
+  `agent_exclusive` otherwise), validates each, inserts them under one `batch_id` and makes ONE
+  `createBatch()` call; that call is all or nothing, so on failure each instance is created alone
+  and only the rows that really cannot start are failed (`GET /runs?batchId=`, `rocketflare agents
+  run <key> --batch x.jsonl`). Inside a run, `ctx.scope(prefix)` namespaces every keyed primitive
+  (`once`, `decide`, `interrupt`, `artifact`, `step` → `prefix/key`; no checkpoint) and
+  `ctx.map(key, items, fn, { concurrency, keyOf })` runs each item as a `once` in its own scope, at
+  most `min(concurrency ?? 4, 6)` at a time: a retry replays the items that finished, the first
+  error stops scheduling, and asks from several items become ONE park. No parent/child runs. Every
+  call through `ctx.chat.client` and `ctx.decide` is metered — one `ai_usage` row carrying
+  `agent_run_id`, awaited — so an agent writes no ledger rows (`ctx.recordUsage` for a client of its
+  own) and `GET /runs/:id` returns `usage`. The meter checks the run's budget before each call
+  (`meta.budget` over `AGENT_RUN_MAX_TOKENS` / `AGENT_RUN_MAX_COST_USD`, plus the tenant's daily
+  cap), starting from every earlier attempt's rows; over → `failed`, event code
+  `agent_budget_exceeded`, never retried. Why: "thousands of cases a day" needs many runs, cheap
+  fan-out inside one, and a ledger that can say what each run cost.
 - **Reading runs**: `agent_run_events` is the durable log, and AG-UI is a pure read-time
   projection (`/agui`), also streamed live by tailing `seq` (`/agui/stream`, #7). A read-stream
   failure emits no `RUN_ERROR` (clients reconnect); `id:` goes on the last frame of a row's group,
@@ -548,7 +569,14 @@ not derived from the model; sliding window defeats prompt caching on long thread
 does not pre-resolve the client; Workers AI forced tools on off-list models are best-effort; no
 rerank, no generated `tsvector`; HITL asks cannot be amended, have no
 reminders, and parks are bounded by instance retention (3 days Free / 30 Paid); runs nobody opens
-stay active-looking; no budgets/quotas over `ai_usage` or prompt versioning. Decisions (D37): no
+stay active-looking; no prompt versioning. Volume (D39): the active-run cap is counted, not locked,
+so a burst can overshoot it; a budget is checked BEFORE a call, so a run overshoots by its last
+call and, under `ctx.map`, by the calls in flight; the daily cap is a UTC day over agent rows only
+(chat spend is not capped) and TypeSafe is unpriced, so decisions count toward tokens alone; `map`
+runs inside one step on one DB client (six in flight is the ceiling, and a tool loop inside a scope
+restarts on a retry — there is no per-scope checkpoint); a budget error raised inside a tool
+handler is reported to the model as a tool error rather than stopping the run; no batch UI, no
+per-batch cancel, and a batch's runs are not grouped on the runs page. Decisions (D37): no
 zod-schema → questions compiler, the `llm_self_report` fallback is uncalibrated with no vote/logprob
 mode, TypeSafe calls are unpriced (no published rates), no per-agent decisions provider
 (`agent_models` is chat-only), and a `sift` over 100 items is the caller's to batch. Replay (D38): a tool loop's model
@@ -620,7 +648,9 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `~/.rocketflare/config.json` (0600); `ROCKETFLARE_API_KEY`/`ROCKETFLARE_URL` override it for CI.
 `--json` is available on every read. `traces list|show` reads the local AI trace store (D32);
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
-case to `apps/evals/datasets/` (D33, both admin+). Exit codes: 0 ok · 1 error · 2 not logged in ·
+case to `apps/evals/datasets/` (D33, both admin+). `agents list`, `agents run <key> --input x.json |
+--batch x.jsonl` (chunks of 100, failed lines reported, exit 1) and `agents runs list [--batch id]`
+start and follow runs (D39). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
 No command prints a full key. Plugins register top-level commands named after their id.
 Detail: `.claude/rules/cli.md`.

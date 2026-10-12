@@ -136,7 +136,7 @@ const CHECKPOINT = {
 
 async function claimedRun(env: TestEnv, role: 'owner' | 'member' = 'member') {
   const { user, tenant } = await createTestTenantWithUser(db, role)
-  const { run } = await enqueueRun(db, env, {
+  const { run } = await enqueueRun(db, loadConfig(env), env, {
     tenantId: tenant.id,
     agentKey: 'summarize-text',
     input: { text: 'anything' },
@@ -447,7 +447,7 @@ describe('the lifecycle around a park', () => {
     const env = createTestEnv()
     const { run, tenant, user } = await claimedRun(env)
     await parkRun(db, tenant.id, run.id)
-    const second = await enqueueRun(db, env, {
+    const second = await enqueueRun(db, loadConfig(env), env, {
       tenantId: tenant.id,
       agentKey: 'summarize-text',
       input: { text: 'again' },

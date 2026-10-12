@@ -480,7 +480,9 @@ Agent runs need the `AGENT_RUN_WORKFLOW` binding (declared in both tomls; `wrang
 instances locally). Without it `POST /api/agents/runs` is 503 `agent_runs_not_configured`. Verify
 (from the Agents page in the nav, or by hand):
 `POST /api/agents/runs` `{ "agentKey": "summarize-text", "input": { "text": "<a paragraph>" } }` →
-202; `GET /api/agents/runs/<id>` reaches `succeeded` with `output.summary`.
+202; `GET /api/agents/runs/<id>` reaches `succeeded` with `output.summary` and `usage` (D39).
+A batch (D39) takes a non-exclusive agent: `pnpm cli agents run triage-research --batch q.jsonl`
+with one `{ "question": "…" }` per line, then `pnpm cli agents runs list --batch <id>`.
 
 **Human-in-the-loop walkthrough** (`docs/CONCEPTS.md` §9). A run can stop and ask a person, and
 **`wrangler dev` is the only way to exercise that** — the suspend is `step.waitForEvent`, which the

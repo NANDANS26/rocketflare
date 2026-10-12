@@ -26,6 +26,13 @@ An agent can now run many times at once per organisation (`exclusive: false`, or
 - `decisions.ts` exports `decideWithShapes` (the `sift`/`pick` shapes over any raw decide) and `toDecision`; `createDecide` is built on it, with no behaviour change.
 - `apps/web/vitest.config.ts`: the `config` and `kit-only` projects get `testTimeout: PROCESS_TEST_TIMEOUT` (20 s × the latency factor) — their end-to-end tooling tests run child processes and timed out under a loaded gate.
 - New skill `.claude/skills/rf-agent-replay`. Rationale and known gaps: `docs/CONCEPTS.md` §9 "Replay (D38)".
+- D39: `agent_runs.exclusive` (from `meta.exclusive` at enqueue) and `agent_runs.batch_id`; the exclusive index's predicate is `exclusive AND active`, so a non-exclusive agent runs any number at once. `triage-research` is now `exclusive: false`.
+- D39: `enqueueRun(db, cfg, env, input)` takes the config, looks for an exclusive agent's active run first, then enforces `AGENT_MAX_ACTIVE_RUNS_PER_TENANT` (default 50, 429 `agent_runs_limit`) and `AGENT_TENANT_DAILY_COST_USD` (429 `ai_budget_exceeded`).
+- D39: `POST /api/agents/runs/batch` (`enqueueRunBatch`, contracts `createAgentRunBatch{Request,Response}Schema`, `AGENT_RUN_BATCH_MAX` = 100): one non-exclusive agent (400 `agent_exclusive` otherwise), per-input errors by index, one `createBatch()` with a per-instance fallback; `GET /api/agents/runs?batchId=`.
+- D39: `ctx.scope(prefix)` and `ctx.map(key, items, fn, { concurrency, keyOf })` in the new `services/agents/fanout.ts`; `OnceOptions.replay` gains `'inner'`, which replay uses to re-run a map item.
+- D39: the ledger is one `ai_usage` row PER CALL carrying `agent_run_id`, written by the run's meter (new `services/agents/budget.ts`) for every call through `ctx.chat.client` and `ctx.decide`; the example agents no longer call `recordUsage`, and `ctx.recordUsage(call)` is for a client an agent builds itself. `GET /api/agents/runs/:id` returns `usage`.
+- D39: budgets — `meta.budget { maxTokens, maxCostUsd }` over `AGENT_RUN_MAX_TOKENS` / `AGENT_RUN_MAX_COST_USD`, checked before every metered call from every attempt's rows; a run over it fails with event code `agent_budget_exceeded` and is never retried.
+- D39: CLI `rocketflare agents list`, `agents run <key> --input x.json | --batch x.jsonl` and `agents runs list [--batch id]`. Rationale and known gaps: `docs/CONCEPTS.md` §9 "Volume (D39)".
 
 ## How to apply
 
@@ -48,6 +55,9 @@ An agent can now run many times at once per organisation (`exclusive: false`, or
 - `apps/web/tests/api/ai-prompts.test.ts`, `apps/web/tests/api/agent-models.test.ts` → the prompt lists filter to `CORE_PROMPT_REGISTRY` → keep the filter.
 - `apps/web/src/api/services/agents/decisions.ts` → `createDecide`'s body now ends in `decideWithShapes(...)` → keep your own changes inside the raw decide function.
 - `apps/web/src/api/services/agents/examples/triage-research.ts` → the `triage:answer` `once` gained a third argument and was reformatted → keep your edits to the call, add `{ replay: 'rerun' }`.
+- `apps/web/src/api/services/agents/runtime.ts` → the `AgentContext` literal is now `withFanout({ … })` with `recordUsage`, and the client is wrapped by `meterChatClient` → keep your own context fields inside the literal.
+- `apps/web/src/api/services/agents/examples/*.ts` → `recordUsage` imports and `onUsage` callbacks were deleted → delete yours the same way; never keep both.
+- `apps/web/src/api/services/agents/runs.ts` → `enqueueRun` gained `cfg` and the capacity gate → re-apply your own enqueue changes after the exclusive lookup.
 
 ## Verify
 

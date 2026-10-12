@@ -69,6 +69,19 @@ export interface AgentMeta<Input = unknown, Output = unknown> {
    * adds its own subject.
    */
   approvers?: z.infer<typeof agentApproversSchema>
+  /**
+   * D39: what ONE run of this agent may spend, overriding `AGENT_RUN_MAX_TOKENS` /
+   * `AGENT_RUN_MAX_COST_USD`. Checked before every model call and decision the run makes; a run
+   * over it fails with event code `agent_budget_exceeded`. Decision engines with no price
+   * (TypeSafe) count toward `maxTokens` only.
+   */
+  budget?: AgentBudget
+}
+
+/** D39: a per-run spending cap. Either side may be absent — the deployment's default applies. */
+export interface AgentBudget {
+  maxTokens?: number
+  maxCostUsd?: number
 }
 
 /** `GET /api/agents` item — the meta without its zod schemas (not serialisable). */
@@ -151,6 +164,14 @@ export const agentRunSchema = z.object({
   finishedAt: z.coerce.date().nullable(),
   cancelRequestedAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
+  /**
+   * D39: whether this run held its agent's exclusive slot — copied from `meta.exclusive` at enqueue,
+   * so the database predicate does not depend on the code that is deployed today. Defaulted for a
+   * response from a server older than D39.
+   */
+  exclusive: z.boolean().default(true),
+  /** D39: the `POST /runs/batch` call that created this run; null for a single enqueue. */
+  batchId: z.string().uuid().nullable().default(null),
 })
 export type AgentRun = z.infer<typeof agentRunSchema>
 
@@ -163,6 +184,8 @@ export type CreateAgentRunResponse = z.infer<typeof createAgentRunResponseSchema
 export const agentRunListQuerySchema = paginationQuerySchema.extend({
   agentKey: agentKeySchema.optional(),
   status: agentRunStatusSchema.optional(),
+  /** D39: only the runs one batch created. */
+  batchId: z.string().uuid().optional(),
 })
 export type AgentRunListQuery = z.infer<typeof agentRunListQuerySchema>
 
@@ -172,6 +195,46 @@ export const createAgentRunRequestSchema = z.object({
   input: z.unknown(),
 })
 export type CreateAgentRunRequest = z.infer<typeof createAgentRunRequestSchema>
+
+// ---- Batch enqueue (D39) -------------------------------------------------------------------------
+
+/** Most inputs one `POST /api/agents/runs/batch` takes — the Workflows `createBatch` ceiling. */
+export const AGENT_RUN_BATCH_MAX = 100
+
+/**
+ * `POST /api/agents/runs/batch`: many runs of ONE non-exclusive agent in one request, and one
+ * `AGENT_RUN_WORKFLOW.createBatch()` call. Each input is validated against the agent's own
+ * `inputSchema` in the service, item by item — an invalid one is reported, the rest still run.
+ */
+export const createAgentRunBatchRequestSchema = z.object({
+  agentKey: agentKeySchema,
+  inputs: z.array(z.unknown()).min(1).max(AGENT_RUN_BATCH_MAX),
+})
+export type CreateAgentRunBatchRequest = z.infer<typeof createAgentRunBatchRequestSchema>
+
+/**
+ * One input's fate, at its `index` in the request. `run` is set whenever a row exists — including
+ * a row whose Workflow instance could not be created, which is settled `failed` and carries the
+ * error too. `run: null` means the input never became a row (it did not validate).
+ */
+export const agentRunBatchItemSchema = z.object({
+  index: z.number().int().nonnegative(),
+  run: agentRunSchema.nullable(),
+  error: z
+    .object({ code: z.string(), message: z.string(), details: z.unknown().optional() })
+    .nullable(),
+})
+export type AgentRunBatchItem = z.infer<typeof agentRunBatchItemSchema>
+
+/** 202. `created` counts runs that are queued; `failed` counts every item with an `error`. */
+export const createAgentRunBatchResponseSchema = z.object({
+  batchId: z.string().uuid(),
+  agentKey: agentKeySchema,
+  created: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  items: z.array(agentRunBatchItemSchema),
+})
+export type CreateAgentRunBatchResponse = z.infer<typeof createAgentRunBatchResponseSchema>
 
 // ---- Events ---------------------------------------------------------------------------------------
 
@@ -258,6 +321,8 @@ export const agentErrorEventDataSchema = z
      * produced no call — `{ reason, stopReason, text }` with what the model actually said.
      */
     details: z.unknown().optional(),
+    /** A machine-readable reason, when there is one — `agent_budget_exceeded` (D39). */
+    code: z.string().optional(),
   })
   .passthrough()
 export type AgentErrorEventData = z.infer<typeof agentErrorEventDataSchema>
@@ -300,6 +365,16 @@ export const agentRunWithEventsSchema = agentRunSchema.extend({
   artifacts: z.array(agentArtifactSchema).default([]),
   /** Every typed question the run asked (D37) — answers, probabilities, the engine that gave them. */
   decisions: z.array(agentRunDecisionSchema).default([]),
+  /** D39: what the run spent, every attempt included — its `ai_usage` rows, summed. */
+  usage: z
+    .object({
+      calls: z.number().int().nonnegative(),
+      inputTokens: z.number().int().nonnegative(),
+      outputTokens: z.number().int().nonnegative(),
+      /** Priced calls only, in microcents (1e-8 USD); an unpriced call counts in the tokens alone. */
+      costMicrocents: z.number().int().nonnegative(),
+    })
+    .optional(),
 })
 export type AgentRunWithEvents = z.infer<typeof agentRunWithEventsSchema>
 
