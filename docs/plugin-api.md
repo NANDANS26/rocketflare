@@ -120,6 +120,10 @@ The server surface: the context family, and the types a plugin must be able to n
     The agentic loop, with this run's client, model, ceiling and approval plumbing already bound.
   - `structured<T>(options: PluginStructuredOptions<T>): Promise<T>`
     One forced tool call, zod-validated, one retry with the issues fed back.
+  - `decide: AgentDecide`
+    Typed questions answered with probabilities (D37): `decide(key, { state, questions })`, `decide.sift(key, …)`, `decide.pick(key, …)`. The tenant's decisions engine answers —…
+- `interface AgentDecide`
+  `ctx.decide` — callable, with the two shapes as properties.
 - `interface AgentTraceContext extends Omit<TraceParams, 'name'>`
 - `class AiNotConfiguredError extends ServiceUnavailableError`
   503 `ai_not_configured`: nothing resolves for the tenant (no config row, no platform key).
@@ -138,6 +142,8 @@ The server surface: the context family, and the types a plugin must be able to n
   - `waitUntil(promise: Promise<unknown>): void`
 - `type Database = PgDatabase<PgQueryResultHKT, typeof schema>`
 - `interface DatabaseHandle`
+- `interface Decision`
+  What `ctx.decide(...)` resolves to.
 - `function defineTool<Input>(tool: Tool<Input>): Tool<Input>`
   Declare a tool. A thin helper, and its only job is to be the thing a plugin imports instead of the `Tool` type from a kit path — but it is also where the two rules in this file's…
 - `async function deleteIngestedDocument( ctx: PluginContext, input: { tenantId: string; source: string; externalId: string } ): Promise<boolean>`
@@ -209,6 +215,8 @@ The server surface: the context family, and the types a plugin must be able to n
 - `function pageWindow(query: PaginationQuery): { limit: number; offset: number }`
 - `function pgErrorCode(err: unknown): string \| undefined`
   The Postgres SQLSTATE (`23505`, `40001`…) of a driver error, wherever it hangs: both drivers put `code` on their own error (postgres.js, Neon's `NeonDbError`) and drizzle wraps…
+- `interface PickOptions<T>`
+- `interface PickResult<T>`
 - `type PluginAgent = AgentDefinition<Input, Output>`
   A plugin's agent, as `ServerPlugin.agents` takes it.
 - `interface PluginAuth`
@@ -386,6 +394,8 @@ The server surface: the context family, and the types a plugin must be able to n
 - `interface SetResourceGroupsInput`
 - `function sharedWithMyGroups( scope: AccessScope, junction: string, foreignKey: string, resourceId: SQL ): SQL`
   `exists (select 1 from <junction> j where j.<fk> = <resource>.id and j.group_id = any($ids))`.
+- `interface SiftOptions<T>`
+- `interface SiftResult<T>`
 - `async function signState( config: PluginConfig, purpose: string, payload: Record<string, unknown>, opts: { ttlSeconds?: number } = {} ): Promise<string>`
   Sign `payload` for `purpose`. The result is URL-safe: `<body>.<signature>`, both base64url.
 - `type SpanKind = 'agent' \| 'llm' \| 'tool' \| 'retrieval' \| 'embedding' \| 'job' \| 'span'`
@@ -1010,6 +1020,8 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: AgentCtx.once :: once<T>(key: string, fn: () => Promise<T>): Promise<T>
 @/plugins/api :: member :: AgentCtx.toolLoop :: toolLoop(options: PluginToolLoopOptions): Promise<ToolLoopResult>
 @/plugins/api :: member :: AgentCtx.structured :: structured<T>(options: PluginStructuredOptions<T>): Promise<T>
+@/plugins/api :: member :: AgentCtx.decide :: decide: AgentDecide
+@/plugins/api :: interface :: AgentDecide :: interface AgentDecide
 @/plugins/api :: interface :: AgentTraceContext :: interface AgentTraceContext extends Omit<TraceParams, 'name'>
 @/plugins/api :: class :: AiNotConfiguredError :: class AiNotConfiguredError extends ServiceUnavailableError
 @/plugins/api :: type :: AnyServerPlugin :: type AnyServerPlugin = ServerPlugin<SharedPlugin>
@@ -1023,6 +1035,7 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: CronCtx.waitUntil :: waitUntil(promise: Promise<unknown>): void
 @/plugins/api :: type :: Database :: type Database = PgDatabase<PgQueryResultHKT, typeof schema>
 @/plugins/api :: interface :: DatabaseHandle :: interface DatabaseHandle
+@/plugins/api :: interface :: Decision :: interface Decision
 @/plugins/api :: function :: defineTool :: function defineTool<Input>(tool: Tool<Input>): Tool<Input>
 @/plugins/api :: function :: deleteIngestedDocument :: async function deleteIngestedDocument( ctx: PluginContext, input: { tenantId: string; source: string; externalId: string } ): Promise<boolean>
 @/plugins/api :: interface :: DetachedCtx :: interface DetachedCtx extends PluginContext
@@ -1067,6 +1080,8 @@ nothing in the comparison that can throw.
 @/plugins/api :: function :: openSecret :: async function openSecret(config: PluginConfig, sealed: string): Promise<string>
 @/plugins/api :: function :: pageWindow :: function pageWindow(query: PaginationQuery): { limit: number; offset: number }
 @/plugins/api :: function :: pgErrorCode :: function pgErrorCode(err: unknown): string | undefined
+@/plugins/api :: interface :: PickOptions :: interface PickOptions<T>
+@/plugins/api :: interface :: PickResult :: interface PickResult<T>
 @/plugins/api :: type :: PluginAgent :: type PluginAgent = AgentDefinition<Input, Output>
 @/plugins/api :: interface :: PluginAuth :: interface PluginAuth
 @/plugins/api :: member :: PluginAuth.user :: user: User
@@ -1175,6 +1190,8 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: ServerPlugin.extensions :: extensions?: Readonly<Record<string, readonly unknown[]>>
 @/plugins/api :: interface :: SetResourceGroupsInput :: interface SetResourceGroupsInput
 @/plugins/api :: function :: sharedWithMyGroups :: function sharedWithMyGroups( scope: AccessScope, junction: string, foreignKey: string, resourceId: SQL ): SQL
+@/plugins/api :: interface :: SiftOptions :: interface SiftOptions<T>
+@/plugins/api :: interface :: SiftResult :: interface SiftResult<T>
 @/plugins/api :: function :: signState :: async function signState( config: PluginConfig, purpose: string, payload: Record<string, unknown>, opts: { ttlSeconds?: number } = {} ): Promise<string>
 @/plugins/api :: type :: SpanKind :: type SpanKind = 'agent' | 'llm' | 'tool' | 'retrieval' | 'embedding' | 'job' | 'span'
 @/plugins/api :: interface :: SpanParams :: interface SpanParams

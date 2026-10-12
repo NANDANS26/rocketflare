@@ -38,6 +38,8 @@ describe('/api/ai/prompts', () => {
       'summarize-text',
       'chat-compaction',
       'research-topic',
+      'agent-decide',
+      'triage-research',
       'evals-judge',
     ])
     expect(list.items[0]).toMatchObject({

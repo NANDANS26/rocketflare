@@ -50,6 +50,12 @@ export const ATTR = {
   feedbackTarget: 'rocketflare.feedback.target',
   provider: 'rocketflare.provider',
   tags: 'rocketflare.tags',
+  decisionKey: 'rocketflare.decision.key',
+  decisionMethod: 'rocketflare.decision.method',
+  decisionQuestions: 'rocketflare.decision.questions',
+  decisionQuestionsHash: 'rocketflare.decision.questions_hash',
+  decisionMinConfidence: 'rocketflare.decision.min_confidence',
+  decisionReplayed: 'rocketflare.decision.replayed',
 
   oiSpanKind: 'openinference.span.kind',
   oiInputValue: 'input.value',
@@ -223,6 +229,29 @@ export function toolAttributes(params: { name: string; toolCallId?: string }): S
     [ATTR.toolType]: 'function',
     [ATTR.toolCallId]: params.toolCallId,
     [ATTR.oiToolName]: params.name,
+  }
+}
+
+/** A `ctx.decide` call (D37): which question set, which engine, how sure the least sure answer was. */
+export function decisionAttributes(params: {
+  key: string
+  method?: string
+  provider?: string
+  model?: string
+  questions: number
+  questionsHash: string
+  minConfidence?: number
+  replayed?: boolean
+}): SpanAttributes {
+  return {
+    [ATTR.decisionKey]: params.key,
+    [ATTR.decisionMethod]: params.method,
+    [ATTR.decisionQuestions]: params.questions,
+    [ATTR.decisionQuestionsHash]: params.questionsHash,
+    [ATTR.decisionMinConfidence]: params.minConfidence,
+    [ATTR.decisionReplayed]: params.replayed,
+    [ATTR.provider]: params.provider,
+    [ATTR.requestModel]: params.model,
   }
 }
 

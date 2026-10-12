@@ -1,6 +1,6 @@
 /**
  * "Test connection" (D17): one minimal, deliberately cheap call against a provider — a 10-token
- * completion for chat, one embedding for embeddings — resolved EXACTLY the way the runtime does
+ * completion for chat, one embedding for embeddings, one yes/no question for decisions (D37) — resolved EXACTLY the way the runtime does
  * (`chatClientFromRow` / `embeddingsClientFromRow`), so a green test cannot mean something
  * different from a green chat. Tests either a saved row (`configId`, tenant-scoped) or an inline
  * candidate the admin has not saved yet. Nothing credential-shaped leaves this module: the verdict
@@ -13,9 +13,11 @@ import type { Database } from '../../../db/client'
 import { type AiConfigRow, aiConfigs } from '../../../db/schema'
 import { BadRequestError, NotFoundError } from '../../utils/core/errors'
 import { createChatClient, createEmbeddingsClient, type FetchLike } from './client'
+import type { DecisionClient } from './decisions/types'
+import { createTypesafeClient } from './decisions/typesafe'
 import { AiError, describeAiError, normalizeAiError } from './errors'
 import { providerSupportsScope } from './providers'
-import { chatClientFromRow, embeddingsClientFromRow } from './resolve'
+import { chatClientFromRow, decisionsClientFromRow, embeddingsClientFromRow } from './resolve'
 import type { AiEnv, ChatClient, EmbeddingsClient } from './types'
 
 /** A test that hangs is worse than one that fails — the admin is watching a spinner. */
@@ -23,11 +25,20 @@ export const PROBE_TIMEOUT_MS = 20_000
 const PROBE_TEXT = 'ping'
 
 interface Candidate {
-  scope: 'chat' | 'embeddings'
+  scope: AiConfigRow['scope']
   provider: AiConfigRow['provider']
   model: string
   chat?: ChatClient
   embeddings?: EmbeddingsClient
+  decisions?: DecisionClient
+}
+
+/** The decisions probe: one cheap yes/no — enough to prove the key, the model id and the response shape. */
+const DECISION_PROBE = {
+  state: PROBE_TEXT,
+  questions: {
+    probe: { type: 'noul' as const, instructions: 'Is this text a greeting or a ping?' },
+  },
 }
 
 async function candidateFor(
@@ -43,6 +54,14 @@ async function candidateFor(
       where: and(eq(aiConfigs.id, input.configId), eq(aiConfigs.tenantId, tenantId)),
     })
     if (!row) throw new NotFoundError('AI config not found')
+    if (row.scope === 'decisions') {
+      return {
+        scope: 'decisions',
+        provider: row.provider,
+        model: row.model,
+        decisions: await decisionsClientFromRow(row, cfg, fetchImpl),
+      }
+    }
     return row.scope === 'chat'
       ? {
           scope: 'chat',
@@ -68,6 +87,21 @@ async function candidateFor(
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,
     fetch: fetchImpl,
+  }
+  if (input.scope === 'decisions') {
+    if (!input.apiKey) {
+      throw new BadRequestError('A TypeSafe API key is required to test', 'api_key_required')
+    }
+    return {
+      scope: 'decisions',
+      provider: input.provider,
+      model: input.model,
+      decisions: createTypesafeClient({
+        apiKey: input.apiKey,
+        baseUrl: input.baseUrl,
+        fetch: fetchImpl,
+      }),
+    }
   }
   return input.scope === 'chat'
     ? {
@@ -125,6 +159,11 @@ export async function testConfig(
         maxTokens: 10,
         messages: [{ role: 'user', content: PROBE_TEXT }],
         cache: false,
+        signal: controller.signal,
+      })
+    } else if (candidate.decisions) {
+      await candidate.decisions.ask(DECISION_PROBE, {
+        model: candidate.model,
         signal: controller.signal,
       })
     } else if (candidate.embeddings) {

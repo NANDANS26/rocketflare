@@ -18,6 +18,7 @@ export { judgeHarness } from './judge-harness'
 export {
   BudgetJudge,
   ContainsJudge,
+  DecisionJudge,
   type EvalJudge,
   FaithfulnessJudge,
   MatchesJudge,

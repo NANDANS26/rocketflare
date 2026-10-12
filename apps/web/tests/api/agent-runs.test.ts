@@ -76,6 +76,12 @@ describe('GET /api/agents', () => {
         exclusive: true,
         title: expect.any(String),
       }),
+      expect.objectContaining({
+        key: 'triage-research',
+        promptKey: 'triage-research',
+        exclusive: true,
+        title: expect.any(String),
+      }),
     ])
     expect((await request('/api/agents')).status).toBe(401)
   })

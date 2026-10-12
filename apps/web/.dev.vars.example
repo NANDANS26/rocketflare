@@ -70,6 +70,10 @@ OIDC_TRUST_EMAIL=
 # it chat falls back to Workers AI through the [ai] binding (zero key, billed to the Cloudflare account).
 ANTHROPIC_API_KEY=
 EMBEDDINGS_API_KEY=
+# Decisions (D37): TypeSafe's Jev answers `ctx.decide` with calibrated probabilities. Optional —
+# without it (and without a tenant Decisions row in Settings → AI) decisions fall back to the chat
+# model's self-reported probabilities, recorded as `llm_self_report` (uncalibrated).
+TYPESAFE_API_KEY=
 # Evals only (D33, docs/EVALS.md): `pnpm eval --provider fireworks|gemini` (and `--judge-provider`)
 # read these; the Worker never does, which is why they are comments here and not bindings.
 # FIREWORKS_API_KEY=

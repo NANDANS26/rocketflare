@@ -14,6 +14,7 @@ import {
   HandRaisedIcon,
   PaperClipIcon,
   PauseCircleIcon,
+  ScaleIcon,
 } from '@heroicons/react/24/outline'
 import { Markdown } from '@/ui/components/ai/Markdown'
 import { ToolCallRow } from './ToolCallRow'
@@ -49,6 +50,8 @@ function RowIcon({ row }: { row: Row }) {
       return <ChatBubbleLeftEllipsisIcon className={`${ICON} text-primary`} />
     case 'artifact':
       return <PaperClipIcon className={`${ICON} text-secondary`} />
+    case 'decision':
+      return <ScaleIcon className={`${ICON} text-secondary`} />
     case 'text':
       return <HandRaisedIcon className={`${ICON} text-transparent`} aria-hidden="true" />
     default:
@@ -109,9 +112,50 @@ function RowBody({ row }: { row: Row }) {
           <span className="text-muted"> · {row.artifactKind} artifact</span>
         </p>
       )
+    case 'decision':
+      return <DecisionBody row={row} />
     case 'unknown':
       return <JsonDisclosure summary={row.type} value={row.data} className="mt-0" />
     default:
       return null
   }
+}
+
+/** Answers shown inline; a sift over many items folds the rest behind a disclosure. */
+const DECISION_INLINE_ANSWERS = 4
+
+/**
+ * A `ctx.decide` call (D37): the question set's key, each answer with its confidence, and whether
+ * the numbers are calibrated — a self-reported probability must never read like Jev's.
+ */
+function DecisionBody({ row }: { row: Extract<Row, { kind: 'decision' }> }) {
+  const inline = row.answers.slice(0, DECISION_INLINE_ANSWERS)
+  const rest = row.answers.slice(DECISION_INLINE_ANSWERS)
+  return (
+    <div>
+      <p>
+        <span className="font-medium">Decided</span>{' '}
+        <span className="font-mono text-xs">{row.key}</span>{' '}
+        {row.method === 'typesafe' ? (
+          <span className="badge badge-ghost badge-sm">Jev</span>
+        ) : (
+          <span
+            className="badge badge-warning badge-outline badge-sm"
+            title="The chat model reported these probabilities itself; they are not calibrated"
+          >
+            self-reported
+          </span>
+        )}
+      </p>
+      <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-secondary">
+        {inline.map(answer => (
+          <li key={answer.id}>
+            <span className="font-mono">{answer.id}</span> → {answer.answer}{' '}
+            <span className="text-muted">({answer.confidence.toFixed(2)})</span>
+          </li>
+        ))}
+      </ul>
+      {rest.length > 0 && <JsonDisclosure summary={`${rest.length} more answers`} value={rest} />}
+    </div>
+  )
 }

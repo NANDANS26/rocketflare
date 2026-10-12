@@ -63,6 +63,25 @@
       ]
     },
     {
+      "id": "example-agent-triage-research",
+      "kind": "example",
+      "label": "The decisions example agent (ctx.decide screen, triage and escalation)",
+      "anchor": "apps/web/src/api/services/agents/examples/triage-research.ts",
+      "paths": [
+        "apps/web/src/api/services/agents/examples/triage-research.ts",
+        "apps/web/src/ui/pages/agents/outputs/triage-research.tsx",
+        "apps/web/tests/api/agent-triage-research.test.ts",
+        "apps/evals/suites/agents/triage-research.eval.ts",
+        "apps/evals/datasets/triage-research.jsonl"
+      ],
+      "registries": [
+        "apps/web/src/api/services/agents/registry.ts#CORE_AGENTS",
+        "packages/shared/src/ai/agents.ts#CORE_AGENT_KEYS",
+        "apps/web/src/api/services/prompts.ts#CORE_PROMPT_REGISTRY",
+        "apps/web/src/ui/pages/agents/outputs/index.ts#AGENT_OUTPUTS"
+      ]
+    },
+    {
       "id": "example-feature",
       "kind": "plugin",
       "label": "The example-feature reference plugin (flag, notes table, route, agent tool, CLI)",

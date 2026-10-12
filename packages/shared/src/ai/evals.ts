@@ -137,6 +137,12 @@ export const evalCaseSchema = z.object({
       toolsMatch: evalTrajectoryModeSchema.optional(),
       /** Substrings the output must contain (case-insensitive) — the cheapest deterministic check. */
       contains: z.array(z.string()).optional(),
+      /**
+       * D37: the answers the run's `ctx.decide` calls should give — decision key → question id →
+       * label (`yes`/`no` for a noul, the option id for a choice, the level for a score). Scored
+       * per question, without a model call, from `agent_run_decisions`.
+       */
+      decisions: z.record(z.string(), z.record(z.string(), z.string())).optional(),
     })
     .default({}),
   tags: z.array(z.string()).default([]),

@@ -12,6 +12,8 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { decrypt } from '@/api/auth/oauth-encryption'
+import { resolveDecisions } from '@/api/services/ai/resolve'
+import { loadConfig } from '@/config'
 import { aiConfigs } from '@/db/schema'
 import {
   createTestSession,
@@ -40,6 +42,9 @@ async function memberOf(tenantId: string) {
   await linkUserToTenant(db, user.id, tenantId, 'member')
   return { user, cookie: sessionCookieHeader(await createTestSession(db, user.id, tenantId)) }
 }
+
+/** A TypeSafe-shaped placeholder, built rather than written so no literal looks like a key. */
+const fakeTypesafeKey = (label: string) => `ts-${label}-${'0123456789'.repeat(2)}`
 
 const anthropic = (label: string, extra: Record<string, unknown> = {}) => ({
   label,
@@ -163,6 +168,31 @@ describe('POST /api/ai/config', () => {
       )
     )
     expect(emb).toMatchObject({ scope: 'embeddings', isDefault: true, hasCredential: false })
+  })
+
+  it('typesafe serves the decisions scope only, and decisions takes nothing else (D37)', async () => {
+    const a = await actor()
+    const post = (body: Record<string, unknown>) =>
+      request('/api/ai/config', { method: 'POST', headers: a.cookie }, { json: body })
+    const chatJev = await post({
+      scope: 'chat',
+      label: 'Jev',
+      provider: 'typesafe',
+      model: 'jev-latest',
+      apiKey: fakeTypesafeKey('key'),
+    })
+    expect(chatJev.status).toBe(400)
+    expect((await json<{ code: string }>(chatJev)).code).toBe('provider_scope_unsupported')
+    const decisionsClaude = await post({ ...anthropic('Claude'), scope: 'decisions' })
+    expect(decisionsClaude.status).toBe(400)
+    expect((await json<{ code: string }>(decisionsClaude)).code).toBe('provider_scope_unsupported')
+    const noKey = await post({
+      scope: 'decisions',
+      label: 'Jev',
+      provider: 'typesafe',
+      model: 'jev-latest',
+    })
+    expect(noKey.status).toBe(400)
   })
 
   it('validates provider rules → 400 with a code', async () => {
@@ -310,6 +340,7 @@ describe('GET /api/ai/config/readiness', () => {
     expect(r).toEqual({
       chat: { ready: false, source: 'none' },
       embeddings: { ready: false, source: 'none' },
+      decisions: { ready: false, source: 'none' },
     })
 
     const platform = createTestEnv({
@@ -329,6 +360,13 @@ describe('GET /api/ai/config/readiness', () => {
       model: 'claude-sonnet-4-5',
     })
     expect(r.embeddings.source).toBe('none')
+    // D37: no TypeSafe key, so decisions fall back to the chat model — ready, and labelled so.
+    expect(r.decisions).toEqual({
+      ready: true,
+      source: 'fallback',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    })
 
     // The AI binding makes BOTH scopes ready with no key at all (chat = the Workers AI floor).
     r = aiReadinessSchema.parse(
@@ -368,6 +406,51 @@ describe('GET /api/ai/config/readiness', () => {
       source: 'tenant',
       provider: 'anthropic',
       model: 'claude-opus-4-1',
+    })
+  })
+
+  it('decisions (D37): fallback → platform TypeSafe key → tenant row', async () => {
+    const a = await actor()
+    const env = createTestEnv({ ANTHROPIC_API_KEY: 'sk-ant-platform-0123456789', AI: undefined })
+    const read = async (e = env) =>
+      aiReadinessSchema.parse(
+        await json(await request('/api/ai/config/readiness', { headers: a.cookie }, { env: e }))
+      ).decisions
+    expect((await read()).source).toBe('fallback')
+
+    const withKey = createTestEnv({
+      ANTHROPIC_API_KEY: 'sk-ant-platform-0123456789',
+      TYPESAFE_API_KEY: fakeTypesafeKey('platform'),
+      AI: undefined,
+    })
+    expect(await read(withKey)).toEqual({
+      ready: true,
+      source: 'platform',
+      provider: 'typesafe',
+      model: 'jev-latest',
+    })
+
+    const saved = await request(
+      '/api/ai/config',
+      { method: 'POST', headers: a.cookie },
+      {
+        json: {
+          scope: 'decisions',
+          label: 'Jev',
+          provider: 'typesafe',
+          model: 'jev-latest',
+          apiKey: fakeTypesafeKey('tenant'),
+        },
+      }
+    )
+    expect(saved.status).toBe(201)
+    const row = aiConfigSchema.parse(await json(saved))
+    expect(row).toMatchObject({ scope: 'decisions', isDefault: true, hasCredential: true })
+    expect(await read(withKey)).toEqual({
+      ready: true,
+      source: 'tenant',
+      provider: 'typesafe',
+      model: 'jev-latest',
     })
   })
 })
@@ -423,5 +506,72 @@ describe('POST /api/ai/config/test', () => {
         )
       ).status
     ).toBe(403)
+  })
+})
+
+describe('resolveDecisions (D37)', () => {
+  it('tenant row → platform TypeSafe key → the chat-model fallback → 503', async () => {
+    const a = await actor()
+    const resolve = (env: ReturnType<typeof createTestEnv>) =>
+      resolveDecisions(db, loadConfig(env), env, a.tenant.id, { fallbackSystem: 'judge' })
+
+    const chatOnly = createTestEnv({
+      ANTHROPIC_API_KEY: 'sk-ant-platform-0123456789',
+      AI: undefined,
+    })
+    expect(await resolve(chatOnly)).toMatchObject({
+      source: 'fallback',
+      method: 'llm_self_report',
+      provider: 'anthropic',
+    })
+
+    const nothing = createTestEnv({ ANTHROPIC_API_KEY: '', AI: undefined })
+    await expect(resolve(nothing)).rejects.toMatchObject({ code: 'ai_not_configured' })
+
+    const withKey = createTestEnv({ TYPESAFE_API_KEY: fakeTypesafeKey('platform'), AI: undefined })
+    expect(await resolve(withKey)).toMatchObject({
+      source: 'platform',
+      method: 'typesafe',
+      provider: 'typesafe',
+      model: 'jev-latest',
+    })
+
+    await request(
+      '/api/ai/config',
+      { method: 'POST', headers: a.cookie },
+      {
+        json: {
+          scope: 'decisions',
+          label: 'Jev',
+          provider: 'typesafe',
+          model: 'jev-latest',
+          apiKey: fakeTypesafeKey('tenant'),
+        },
+      }
+    )
+    const tenant = await resolve(withKey)
+    expect(tenant).toMatchObject({ source: 'tenant', method: 'typesafe', provider: 'typesafe' })
+    expect(tenant.configId).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('the connection test probes a decisions candidate and never echoes its key', async () => {
+    const a = await actor()
+    const res = await request(
+      '/api/ai/config/test',
+      { method: 'POST', headers: a.cookie },
+      {
+        json: {
+          scope: 'decisions',
+          provider: 'typesafe',
+          baseUrl: 'http://127.0.0.1:9',
+          model: 'jev-latest',
+          apiKey: fakeTypesafeKey('should-not-leak'),
+        },
+      }
+    )
+    expect(res.status).toBe(200)
+    const body = await json<{ ok: boolean; code?: string; provider: string }>(res)
+    expect(body).toMatchObject({ ok: false, code: 'unavailable', provider: 'typesafe' })
+    expect(JSON.stringify(body)).not.toContain('should-not-leak')
   })
 })

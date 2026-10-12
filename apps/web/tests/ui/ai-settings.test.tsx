@@ -86,7 +86,7 @@ const prodConfig = {
 function mount(routes: RouteTable = {}, session = makeSession()) {
   const fetchMock = stubFetch({
     '/api/ai/config/providers': { items: PROVIDERS, defaultMaxOutputTokens: 16_384 },
-    '/api/ai/config/readiness': { chat: NONE, embeddings: NONE },
+    '/api/ai/config/readiness': { chat: NONE, embeddings: NONE, decisions: NONE },
     '/api/ai/config': { items: [] },
     ...routes,
   })
@@ -101,7 +101,7 @@ describe('Settings → AI', () => {
 
   it('shows a set-up CTA when readiness is none and opens the add modal', async () => {
     mount()
-    expect(await screen.findAllByText('Not configured')).toHaveLength(2)
+    expect(await screen.findAllByText('Not configured')).toHaveLength(3)
     fireEvent.click(screen.getByRole('button', { name: 'Set up chat' }))
     expect(await screen.findByRole('heading', { name: 'Add chat provider' })).toBeInTheDocument()
     // Anthropic is the first chat provider; its default model is prefilled
@@ -237,7 +237,7 @@ describe('Settings → AI', () => {
 
   it('lists configs with default/credential badges and lets an admin test one', async () => {
     const fetchMock = mount({
-      '/api/ai/config/readiness': { chat: READY_CHAT, embeddings: NONE },
+      '/api/ai/config/readiness': { chat: READY_CHAT, embeddings: NONE, decisions: NONE },
       '/api/ai/config': { items: [prodConfig] },
       'POST /api/ai/config/test': {
         ok: true,
@@ -282,13 +282,19 @@ describe('Settings → AI', () => {
   it('shows a member the readiness and list without write controls', async () => {
     mount(
       {
-        '/api/ai/config/readiness': { chat: READY_CHAT, embeddings: NONE },
+        '/api/ai/config/readiness': {
+          chat: READY_CHAT,
+          embeddings: NONE,
+          // D37: with chat ready and no TypeSafe key, decisions are answered by the chat model.
+          decisions: { ...READY_CHAT, source: 'fallback' },
+        },
         '/api/ai/config': { items: [prodConfig] },
       },
       makeSession({ tenant: makeTenant({ role: 'member' }) })
     )
     expect(await screen.findByText('Prod')).toBeInTheDocument()
-    expect(screen.getByText('Ready')).toBeInTheDocument()
+    expect(screen.getAllByText('Ready')).toHaveLength(2)
+    expect(screen.getByText(/chat model fallback, uncalibrated/)).toBeInTheDocument()
     expect(screen.getByText('Ask an administrator to add a provider.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Add/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Set up/ })).not.toBeInTheDocument()

@@ -24,8 +24,11 @@ import type { Logger } from '../../utils/core/logger'
 import { type Tool, type ToolApproval, type ToolLoopCheckpoint, toolInputSchema } from '../ai/kit'
 import type { AiEnv, ChatClient } from '../ai/types'
 import type { JobsQueue } from '../jobs'
+import type { RegistryPromptKey } from '../prompts'
+import type { AgentDecide } from './decisions'
 import { researchTopicAgent } from './examples/research-topic'
 import { summarizeTextAgent } from './examples/summarize-text'
+import { triageResearchAgent } from './examples/triage-research'
 
 /** Emitted by the run into `agent_run_events` (and nudged to viewers). */
 export interface AgentEvent {
@@ -153,8 +156,25 @@ export interface AgentContext<Input = unknown> {
    * which is what keeps one set of approval rules in one place.
    */
   approvals: ReadonlyMap<string, ToolApproval>
-  /** `resolvePrompt(meta.promptKey, vars)` with `appName`/`tenantName` pre-filled. */
-  prompt(vars?: Record<string, string | undefined>): Promise<string>
+  /**
+   * Ask typed questions about a state and get probabilities back (D37) — `ctx.decide(key, { state,
+   * questions })`, or the shapes `ctx.decide.sift(key, …)` (the same yes/no of every item, one
+   * request) and `ctx.decide.pick(key, …)` (one item, or none). Answered by the tenant's decisions
+   * engine — TypeSafe's Jev when configured, else the chat model (`llm_self_report`, uncalibrated)
+   * — and recorded in `agent_run_decisions`.
+   *
+   * **`key` is yours and must be stable across attempts**, exactly like `once` and `interrupt`: a
+   * re-entered `run()` gets the RECORDED answer back, so the run takes the branch it took before.
+   * Re-using a key with different questions throws. The rule the API is shaped around: a question
+   * decides what a thing IS; your code decides what follows — the threshold is a number here.
+   */
+  decide: AgentDecide
+  /**
+   * `resolvePrompt(meta.promptKey, vars)` with `appName`/`tenantName` pre-filled. `promptKey`
+   * names ANOTHER registry entry — for an agent that hands a case to a second agent's body (the
+   * `triage-research` escalation runs `research-topic` on its own prompt).
+   */
+  prompt(vars?: Record<string, string | undefined>, promptKey?: RegistryPromptKey): Promise<string>
   /** Shortcut for a `step` event: `step('summarize', 'Summarising', 'running')`. */
   step(
     key: string,
@@ -176,6 +196,7 @@ export type AnyAgentDefinition = AgentDefinition<any, any>
 const CORE_AGENTS = {
   'summarize-text': summarizeTextAgent,
   'research-topic': researchTopicAgent,
+  'triage-research': triageResearchAgent,
 } satisfies Record<string, AnyAgentDefinition>
 
 /**

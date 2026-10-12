@@ -466,6 +466,16 @@ watch the row go `Indexing → Indexed` within the 5 s poll (the wrangler termin
 `document.convert: indexed`), search a phrase from it, and click the download icon to get the
 original back from R2. Without `[ai]` a binary upload answers 503 `conversion_not_configured`.
 
+**Decisions** (`ctx.decide`, D37 — typed questions agents ask, e.g. the `triage-research` example's
+relevance screen): with nothing configured the chat model answers them with its own probabilities,
+recorded `llm_self_report` and shown as *self-reported* (uncalibrated). For calibrated answers from
+TypeSafe's Jev, either set `TYPESAFE_API_KEY=` in `apps/web/.dev.vars` (deployed: `wrangler secret
+put`, Part 3) or add one per tenant in Settings → AI → *Add decision provider* (provider TypeSafe,
+model `jev-latest`, the key; **Test connection** asks one yes/no question). Verify: `curl -b <cookie>
+localhost:3001/api/ai/config/readiness` → `"decisions":{"ready":true,"source":"platform","provider":"typesafe"…}`
+(`"source":"fallback"` without a key), and a `triage-research` run's timeline shows *Decided* rows
+badged `Jev`.
+
 Agent runs need the `AGENT_RUN_WORKFLOW` binding (declared in both tomls; `wrangler dev` runs
 instances locally). Without it `POST /api/agents/runs` is 503 `agent_runs_not_configured`. Verify
 (from the Agents page in the nav, or by hand):
@@ -733,14 +743,14 @@ in `apps/web/.dev.vars.example` (skip `DATABASE_DRIVER` and `NEON_LOCAL_PROXY` �
 ```bash
 # one per name: OAUTH_ENCRYPTION_KEY RESEND_API_KEY BOOTSTRAP_ADMIN_EMAILS GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
 #   MICROSOFT_CLIENT_ID MICROSOFT_CLIENT_SECRET OIDC_CLIENT_SECRET ANTHROPIC_API_KEY EMBEDDINGS_API_KEY LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY
-#   OTEL_EXPORTER_OTLP_HEADERS
+#   OTEL_EXPORTER_OTLP_HEADERS TYPESAFE_API_KEY
 printf '%s' "$OAUTH_ENCRYPTION_KEY" | pnpm web exec wrangler secret put OAUTH_ENCRYPTION_KEY -c wrangler.staging.toml
 ```
 `wrangler secret put NAME` reads the value from stdin when stdin is not a terminal — pipe it with
 `printf '%s' "$V"`, never `--body` or an argument, so the value stays out of argv and shell history
 (interactively it prompts). `pnpm provision secrets <env>` does exactly this for every name exported
 in the shell. Repeat without `-c` for production after its first deploy. Use different keys per
-environment. `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`, the two `LANGFUSE_*` keys and `OTEL_EXPORTER_OTLP_HEADERS` are optional
+environment. `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`, `TYPESAFE_API_KEY`, the two `LANGFUSE_*` keys and `OTEL_EXPORTER_OTLP_HEADERS` are optional
 (Part 2.5/2.6): skip them and the features degrade as described there.
 Verify: `pnpm web exec wrangler secret list -c wrangler.staging.toml` shows the names;
 `curl https://<staging-host>/api/health` returns ok, `curl https://<staging-host>/api/ready` returns

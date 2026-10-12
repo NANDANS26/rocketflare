@@ -46,9 +46,15 @@ export type {
 export { sharedWithMyGroups } from './access'
 export type {
   AgentCtx,
+  AgentDecide,
+  Decision,
+  PickOptions,
+  PickResult,
   PluginAgent,
   PluginStructuredOptions,
   PluginToolLoopOptions,
+  SiftOptions,
+  SiftResult,
   Tool,
   ToolApproval,
   ToolCtx,

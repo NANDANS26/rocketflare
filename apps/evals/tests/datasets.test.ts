@@ -8,8 +8,13 @@ describe('datasets', () => {
     .filter(f => f.endsWith('.jsonl'))
     .map(f => f.replace(/\.jsonl$/, ''))
 
-  it('ships the three starter datasets', () => {
-    expect(names.sort()).toEqual(['knowledge-chat', 'research-topic', 'summarize-text'])
+  it('ships the four starter datasets', () => {
+    expect(names.sort()).toEqual([
+      'knowledge-chat',
+      'research-topic',
+      'summarize-text',
+      'triage-research',
+    ])
   })
 
   for (const name of names) {

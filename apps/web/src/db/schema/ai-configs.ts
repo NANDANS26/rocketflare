@@ -29,8 +29,13 @@ export const AI_PROVIDER_VALUES = [
   'openai',
   'openai_compatible',
   'workers_ai',
+  'typesafe',
 ] as const satisfies readonly AiProvider[]
-export const AI_SCOPE_VALUES = ['chat', 'embeddings'] as const satisfies readonly AiScope[]
+export const AI_SCOPE_VALUES = [
+  'chat',
+  'embeddings',
+  'decisions',
+] as const satisfies readonly AiScope[]
 
 export const aiConfigs = pgTable(
   'ai_configs',

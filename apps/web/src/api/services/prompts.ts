@@ -100,6 +100,21 @@ material is ambiguous, say so in the rationale and choose the more conservative 
 Reply with ONE JSON object and nothing else, in exactly the shape the task asks for. The rationale
 is one or two plain sentences a developer can act on: what was wrong, or why it passed.`
 
+const AGENT_DECIDE_DEFAULT = `You answer typed questions about a state for {{appName}}. You do not write prose: you
+assign probabilities.
+
+For each question, read the state and the question's criteria, then give a probability for every
+option (or for "yes" on a yes/no question). Probabilities express how likely each option is to be
+the right answer given ONLY the state — not what would be convenient, and not what the question
+seems to hope for. Spread probability when the state does not settle the question; put it on one
+option only when the state clearly does. Questions are independent: never let one answer influence
+another.`
+
+const TRIAGE_RESEARCH_DEFAULT = `You answer a question for {{tenantName}} from passages of their own knowledge base that
+have already been screened for relevance. Use only those passages. Attribute each claim to the
+document it came from, and when the passages do not answer the question, say exactly that rather
+than guessing. Answer in Markdown, concisely.`
+
 export const CORE_PROMPT_REGISTRY = {
   chat: {
     key: 'chat',
@@ -131,6 +146,22 @@ export const CORE_PROMPT_REGISTRY = {
       'System prompt for the `research-topic` agent: searches the knowledge base with `search_knowledge` / `get_document`, may stop to ask a person (`ask_human`) or to save a finding (`index_finding`, approved), and answers with one `submit_answer` call.',
     variables: ['appName', 'tenantName'],
     defaultText: RESEARCH_TOPIC_DEFAULT,
+  },
+  'agent-decide': {
+    key: 'agent-decide',
+    title: 'Decisions fallback (ctx.decide)',
+    description:
+      'System prompt for `ctx.decide` when no TypeSafe (Jev) provider is configured: a chat model assigns its own probabilities to typed questions (recorded as `llm_self_report`, uncalibrated). Point it at a cheap model in Settings → agent models.',
+    variables: ['appName', 'tenantName'],
+    defaultText: AGENT_DECIDE_DEFAULT,
+  },
+  'triage-research': {
+    key: 'triage-research',
+    title: 'Triage research (decisions example agent)',
+    description:
+      'System prompt for the answer step of the `triage-research` agent, which screens search hits with `ctx.decide` and opens only the relevant documents.',
+    variables: ['appName', 'tenantName'],
+    defaultText: TRIAGE_RESEARCH_DEFAULT,
   },
   'evals-judge': {
     key: 'evals-judge',

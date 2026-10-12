@@ -35,7 +35,11 @@ import {
 
 type Issue = { path: PropertyKey[]; message: string }
 
-const SCOPE_LABEL: Record<AiScope, string> = { chat: 'chat', embeddings: 'embeddings' }
+const SCOPE_LABEL: Record<AiScope, string> = {
+  chat: 'chat',
+  embeddings: 'embeddings',
+  decisions: 'decisions',
+}
 
 /** The select's escape hatch to free text. A sentinel, because '' is itself a legal model id. */
 const OTHER_MODEL = '\u0000other'

@@ -388,6 +388,24 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   closed interrupt kinds (approval/choice/input/form). Model-called tools are gated on the tool
   (`requiresApproval`) before any handler runs. Artifacts are an upserted table, and steering notes
   are event rows delivered once.
+- **Decisions (D37)**: `ctx.decide(key, { state, questions })` asks typed questions — `noul`
+  (yes/no), `choice`, `score`, in TypeSafe's own vocabulary — and gets back an answer, a
+  distribution and a `confidence` per question; `ctx.decide.sift` asks the same yes/no of every item
+  in ONE request, `ctx.decide.pick` chooses one item or none. **A question decides what a thing IS;
+  the agent's code decides what follows**, so a threshold is a number in code, not a prompt. Engine
+  order (`resolveDecisions`, the one resolver): tenant `ai_configs(scope='decisions')` (provider
+  `typesafe` — Jev, Settings → AI like any provider, with the same Test button) → platform
+  `TYPESAFE_API_KEY` → the chat model on prompt key `agent-decide`, which reports its own
+  probabilities and is recorded `method: 'llm_self_report'` (uncalibrated, labelled as such in the
+  UI) → 503. Every call is one `agent_run_decisions` row, once per `(run, key)` like `ctx.once`: a
+  re-entered `run()` replays the recorded answer, and the same key with different questions fails
+  the run (`questions_hash` — the policy fingerprint, over the questions and not the state). Each
+  call also writes `ai_usage` (`agent:<key>:decide`), a `decide <key>` span, and a thin `decision`
+  event projected as `kit.agent.decision`; `GET /runs/:id` returns `decisions[]`. `triage-research`
+  is the worked example (screen → triage → answer / not covered / escalate to `research-topic`), and
+  evals score decisions per question with `DecisionJudge` (`expected.decisions`, accuracy + Brier)
+  without a model call. Why: AgentRun-style decomposition — cheap, recorded, separately testable
+  judgments instead of a model turn per decision.
 - **Reading runs**: `agent_run_events` is the durable log, and AG-UI is a pure read-time
   projection (`/agui`), also streamed live by tailing `seq` (`/agui/stream`, #7). A read-stream
   failure emits no `RUN_ERROR` (clients reconnect); `id:` goes on the last frame of a row's group,
@@ -395,7 +413,9 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   because run visibility is per run.
 - **Knowledge (D18)**: `documents` + `chunks` (pgvector HNSW). Text is ingested inline or by job;
   uploads go to R2, then `AI.toMarkdown`, then the same indexer. Search is hybrid dense + lexical
-  with RRF, scoped by `AccessScope` (§1). `document-content.ts` is the one text reader behind both
+  (the lexical half matches ANY query word, ranked by `ts_rank_cd` — `anyTermTsquery` — so a
+  sentence's filler words cannot veto it) with RRF, scoped by `AccessScope` (§1).
+  `document-content.ts` is the one text reader behind both
   the viewer and `get_document`. Agent tools resolve the requester's access at execute time.
   **External ids (D34)**: `documents.external_id` is unique per `(tenant_id, source)` (partial
   index, `0016`); an ingest carrying one is an upsert — one `ON CONFLICT` statement, grants
@@ -488,7 +508,11 @@ not derived from the model; sliding window defeats prompt caching on long thread
 does not pre-resolve the client; Workers AI forced tools on off-list models are best-effort; no
 rerank, no generated `tsvector`; no non-exclusive agents; HITL asks cannot be amended, have no
 reminders, and parks are bounded by instance retention (3 days Free / 30 Paid); runs nobody opens
-stay active-looking; no budgets/quotas over `ai_usage` or prompt versioning; the demo seed's
+stay active-looking; no budgets/quotas over `ai_usage` or prompt versioning. Decisions (D37): no
+replay of an agent's CODE over recorded answers (stored and re-askable, not yet re-runnable), no
+zod-schema → questions compiler, the `llm_self_report` fallback is uncalibrated with no vote/logprob
+mode, TypeSafe calls are unpriced (no published rates), no per-agent decisions provider
+(`agent_models` is chat-only), and a `sift` over 100 items is the caller's to batch. The demo seed's
 vectors are deterministic, so dense search over seeded docs is noise. Tracing: no per-tenant
 backends (BYO keys via `sealSecret`), no native `tracing.enterSpan`, no metrics export, no
 Langfuse/Phoenix MCP; inline ingest from `POST /api/ai/documents/ingest` is untraced (no active
@@ -884,3 +908,6 @@ delegated connections or refresh-token rotation (phase 4); Google Workspace prov
 M365 uses a client secret, not a certificate assertion; no Exchange RBAC-for-Applications scoping
 script; synced private rows are still readable by tenant admins (D29 owner-and-admins); the kit has
 no MCP client; directory sync does not provision kit users or groups (it only matches by email).
+
+TypeSafe (Jev) is NOT a connector in this sense: it answers questions rather than syncing an
+organisation's data, so it is an AI provider in the `decisions` scope (§9, D37).

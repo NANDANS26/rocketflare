@@ -66,11 +66,13 @@ describe('/api/ai/agent-models', () => {
 
     let items = (await list(a.cookie)).items
     expect(items.map(i => i.promptKey).sort()).toEqual([
+      'agent-decide',
       'chat',
       'chat-compaction',
       'evals-judge',
       'research-topic',
       'summarize-text',
+      'triage-research',
     ])
     for (const item of items) {
       expect(item.assignment).toBeNull()

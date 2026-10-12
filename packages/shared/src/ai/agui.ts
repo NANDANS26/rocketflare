@@ -43,6 +43,7 @@ import { z } from 'zod'
 import { agentArtifactSchema } from './artifacts'
 import { MAX_MESSAGE_LENGTH, tokenUsageSchema } from './chat'
 import { aiProviderSchema } from './config'
+import { agentDecisionEventDataSchema } from './decisions'
 import { documentCardSchema } from './embeddings'
 import {
   type AgentRunInterrupt,
@@ -140,6 +141,12 @@ export const KIT_CUSTOM_EVENTS = {
   agentSteering: 'kit.agent.steering',
   /** The run produced something a person opens. */
   agentArtifact: 'kit.agent.artifact',
+  /**
+   * The run answered typed questions through `ctx.decide` (D37): each answer, its confidence and
+   * the engine (`method` says whether the probabilities are calibrated). The thin event payload,
+   * not the row — the full request and distribution are on `GET /runs/:id` `decisions[]`.
+   */
+  agentDecision: 'kit.agent.decision',
 } as const
 
 export type KitCustomEventName = (typeof KIT_CUSTOM_EVENTS)[keyof typeof KIT_CUSTOM_EVENTS]
@@ -203,6 +210,8 @@ export const kitAgentSteeringSchema = z.object({ note: agentSteeringNoteSchema }
 
 export const kitAgentArtifactSchema = z.object({ artifact: agentArtifactSchema })
 
+export const kitAgentDecisionSchema = agentDecisionEventDataSchema
+
 /** `CUSTOM.value` keyed by `CUSTOM.name` — the mapping a consumer needs to read the namespace. */
 export const kitCustomPayloadSchema = {
   [KIT_CUSTOM_EVENTS.chatIds]: kitChatIdsSchema,
@@ -215,6 +224,7 @@ export const kitCustomPayloadSchema = {
   [KIT_CUSTOM_EVENTS.agentInterruptResolved]: kitAgentInterruptResolvedSchema,
   [KIT_CUSTOM_EVENTS.agentSteering]: kitAgentSteeringSchema,
   [KIT_CUSTOM_EVENTS.agentArtifact]: kitAgentArtifactSchema,
+  [KIT_CUSTOM_EVENTS.agentDecision]: kitAgentDecisionSchema,
 } as const
 
 /**

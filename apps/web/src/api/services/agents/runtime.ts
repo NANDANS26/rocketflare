@@ -44,12 +44,13 @@ import {
   StructuredOutputError,
   type ToolApproval,
 } from '../ai/kit'
-import { resolveChat } from '../ai/resolve'
+import { DECISIONS_FALLBACK_PROMPT_KEY, resolveChat, resolveDecisions } from '../ai/resolve'
 import type { AiEnv } from '../ai/types'
 import { notifyMany } from '../notifications'
 import { resolvePrompt } from '../prompts'
 import type { HubEnv, Realtime } from '../realtime'
 import { toAgentArtifact, upsertArtifact } from './artifacts'
+import { createDecide } from './decisions'
 import {
   approvalsForRun,
   expireInterrupts,
@@ -373,6 +374,23 @@ export async function executeRun(
             }
           },
           steering: () => takeSteeringNotes(db, tenantId, runId),
+          decide: createDecide({
+            db,
+            tenantId,
+            runId,
+            userId: run.requestedByUserId,
+            agentKey: agent.meta.key,
+            resolve: async () =>
+              resolveDecisions(db, cfg, env, tenantId, {
+                fallbackSystem: await resolvePrompt(db, tenantId, DECISIONS_FALLBACK_PROMPT_KEY, {
+                  appName: cfg.APP_NAME,
+                  tenantName: tenant?.name ?? '',
+                }),
+                wrapChat: (chatClient, provider) =>
+                  traceChatClient(chatClient, trace, { provider, name: 'decide' }, tracer),
+              }),
+            emit: data => emit({ type: 'decision', data }),
+          }),
           artifact: async input => {
             const row = await upsertArtifact(db, tenantId, runId, input)
             await emit({
@@ -381,8 +399,8 @@ export async function executeRun(
             })
             return toAgentArtifact(row)
           },
-          prompt: vars =>
-            resolvePrompt(db, tenantId, agent.meta.promptKey as 'summarize-text', {
+          prompt: (vars, promptKey) =>
+            resolvePrompt(db, tenantId, promptKey ?? (agent.meta.promptKey as 'summarize-text'), {
               appName: cfg.APP_NAME,
               tenantName: tenant?.name ?? '',
               ...vars,

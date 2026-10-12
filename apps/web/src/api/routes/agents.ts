@@ -42,6 +42,7 @@ import { guardPermission, isAdminLevel } from '../middleware/permissions'
 import { recordActivity } from '../services/activity'
 import { projectRunToAgui } from '../services/agents/agui-projection'
 import { listArtifacts, toAgentArtifact } from '../services/agents/artifacts'
+import { listDecisions } from '../services/agents/decisions'
 import {
   checkEditedToolInput,
   getInterrupt,
@@ -228,15 +229,17 @@ agentsRouter.get('/runs/:id', async c => {
   // read AFTER it, because `expireParkedRun` is exactly the thing that rewrites them.
   const events = await listEvents(db, tenantId, row.id)
   const run = await settleOnRead(c, row, { lastEventAt: events.at(-1)?.at ?? null })
-  const [interrupts, artifacts] = await Promise.all([
+  const [interrupts, artifacts, decisions] = await Promise.all([
     listInterrupts(db, tenantId, run.id),
     listArtifacts(db, tenantId, run.id),
+    listDecisions(db, tenantId, run.id),
   ])
   const body: AgentRunWithEvents = {
     ...toAgentRun(run),
     events: events.map(toAgentRunEvent),
     interrupts: interrupts.map(toAgentRunInterrupt),
     artifacts: artifacts.map(toAgentArtifact),
+    decisions,
   }
   return c.json(body)
 })

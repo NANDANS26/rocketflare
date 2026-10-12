@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { paginationQuerySchema } from '../pagination'
 import { type DeclaredBy, type SHARED_PLUGINS, sharedPlugins } from '../plugins'
 import { agentArtifactEventDataSchema, agentArtifactSchema } from './artifacts'
+import { agentDecisionEventDataSchema, agentRunDecisionSchema } from './decisions'
 import {
   agentApproversSchema,
   agentInterruptEventDataSchema,
@@ -20,7 +21,7 @@ import {
 import { promptKeySchema } from './prompts'
 
 /** Stable identifier for each agent the KIT ships. Append LAST; an app extends this list. */
-export const CORE_AGENT_KEYS = ['summarize-text', 'research-topic'] as const
+export const CORE_AGENT_KEYS = ['summarize-text', 'research-topic', 'triage-research'] as const
 
 type PluginAgentKey = NonNullable<DeclaredBy<(typeof SHARED_PLUGINS)[number], 'agentKeys'>>[number]
 
@@ -181,6 +182,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'interrupt.resolved',
   'steering',
   'artifact',
+  'decision',
 ] as const
 export const agentRunEventTypeSchema = z.enum(AGENT_RUN_EVENT_TYPES)
 export type AgentRunEventType = z.infer<typeof agentRunEventTypeSchema>
@@ -272,6 +274,7 @@ export const AGENT_RUN_EVENT_DATA = {
   'interrupt.resolved': agentInterruptResolvedEventDataSchema,
   steering: steeringNoteDataSchema,
   artifact: agentArtifactEventDataSchema,
+  decision: agentDecisionEventDataSchema,
 } as const satisfies Record<AgentRunEventType, z.ZodTypeAny>
 
 export const agentRunEventSchema = z.object({
@@ -291,6 +294,8 @@ export const agentRunWithEventsSchema = agentRunSchema.extend({
   interrupts: z.array(agentRunInterruptSchema).default([]),
   /** What the run produced that a person opens, keyed by `key` and upserted as it is redrafted. */
   artifacts: z.array(agentArtifactSchema).default([]),
+  /** Every typed question the run asked (D37) — answers, probabilities, the engine that gave them. */
+  decisions: z.array(agentRunDecisionSchema).default([]),
 })
 export type AgentRunWithEvents = z.infer<typeof agentRunWithEventsSchema>
 
@@ -410,3 +415,30 @@ export const researchTopicOutputSchema = z.object({
   turns: z.number().int().nonnegative(),
 })
 export type ResearchTopicOutput = z.infer<typeof researchTopicOutputSchema>
+
+// ---- The decisions example agent (D37) ----------------------------------------------------------
+
+/** Longest question `triage-research` accepts (characters). */
+export const TRIAGE_RESEARCH_MAX_CHARS = 2_000
+
+export const triageResearchInputSchema = z.object({
+  question: z.string().trim().min(1).max(TRIAGE_RESEARCH_MAX_CHARS),
+})
+export type TriageResearchInput = z.infer<typeof triageResearchInputSchema>
+
+/**
+ * How the run ended. `answered` = the screened passages were enough; `not_covered` = they
+ * confidently were not (an honest "the knowledge base does not say"); `escalated` = no question
+ * could settle it, so the full `research-topic` loop answered instead.
+ */
+export const TRIAGE_ROUTES = ['answered', 'not_covered', 'escalated'] as const
+
+export const triageResearchOutputSchema = z.object({
+  answer: z.string().min(1),
+  citations: z.array(researchCitationSchema).max(RESEARCH_TOPIC_MAX_CITATIONS),
+  route: z.enum(TRIAGE_ROUTES),
+  /** Passages search returned, and how many the relevance screen kept. */
+  screened: z.number().int().nonnegative(),
+  kept: z.number().int().nonnegative(),
+})
+export type TriageResearchOutput = z.infer<typeof triageResearchOutputSchema>

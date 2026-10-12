@@ -24,8 +24,10 @@ import {
   type Budget,
   budgetScore,
   containsScore,
+  decisionScore,
   expectedToolNames,
   outputText,
+  type RecordedDecisions,
   regexScore,
   type Score,
   schemaScore,
@@ -107,6 +109,24 @@ export const BudgetJudge = (budget: Budget): EvalJudge =>
         budget
       )
     )
+  )
+
+/**
+ * The run's typed decisions (D37) against `expected.decisions` — read from what the agent target
+ * attached (`artifacts.decisions`, from `agent_run_decisions`), so no model is called. Accuracy is
+ * the score; the Brier score is in the rationale.
+ */
+export const DecisionJudge = (): EvalJudge =>
+  judge(
+    'Decisions',
+    ({ input, run }) => {
+      const expected = input.expected.decisions
+      if (!expected) return unscored('case has no expected.decisions')
+      const recorded = (run.artifacts?.decisions ?? {}) as unknown as RecordedDecisions
+      const { score, rationale } = decisionScore(recorded, expected)
+      return scored({ score, rationale })
+    },
+    c => c.expected.decisions !== undefined
   )
 
 // ---- LLM-as-judge --------------------------------------------------------------------------------

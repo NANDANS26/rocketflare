@@ -164,6 +164,13 @@ const CUSTOM_SAMPLES: Record<string, unknown> = {
       updatedAt: AT,
     },
   },
+  [KIT_CUSTOM_EVENTS.agentDecision]: {
+    decisionId: ARTIFACT,
+    key: 'relevant',
+    provider: 'typesafe',
+    method: 'typesafe',
+    answers: [{ id: 'item_0', type: 'noul', answer: 'yes', confidence: 0.86 }],
+  },
 }
 
 describe('AG-UI contract', () => {

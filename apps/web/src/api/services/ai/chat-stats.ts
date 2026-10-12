@@ -157,7 +157,8 @@ export async function buildConversationStats(
       ready: chat.ready,
       provider: chat.ready ? (chat.provider ?? null) : null,
       model: chat.ready ? (chat.model ?? null) : null,
-      source: chat.source,
+      // `fallback` is a decisions-only source; chat readiness never reports it.
+      source: chat.source === 'fallback' ? 'none' : chat.source,
       maxOutputTokens: cfg.AGENT_MAX_OUTPUT_TOKENS,
       knowledgeTools,
       // The same cap the turn applies: the interactive ceiling, not the Workflow one.

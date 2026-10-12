@@ -78,6 +78,7 @@ string can't check.
 | the output has the declared shape | `SchemaJudge(schema)` |
 | it searched (or didn't), in what order | `TrajectoryJudge(mode)` + `expected.tools` / `toolsMatch` |
 | latency, tokens, cost | `BudgetJudge({ maxMs, maxTokens, maxCostUsd })` |
+| its typed decisions (`ctx.decide`, D37) came out right — and how well calibrated | `DecisionJudge()` + `expected.decisions` (scored from `agent_run_decisions`, no model call; Brier in the rationale). `suites/agents/triage-research.eval.ts` is the example; run it with and without `TYPESAFE_API_KEY` to compare Jev with the chat-model fallback |
 | criteria in plain language | `RubricJudge()` + `expected.rubric` |
 | every claim is grounded in what it retrieved | `FaithfulnessJudge()` |
 | it agrees with a reference answer | `ReferenceJudge()` + `expected.output` |

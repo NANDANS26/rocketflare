@@ -412,7 +412,7 @@ describe('the closed sets a plugin opens', () => {
     expectTypeOf<JobOf<'chat.compact'>['payload']['conversationId']>().toEqualTypeOf<string>()
     // The kit's own agent keys, pinned exactly; the installed union may only be wider.
     expectTypeOf<(typeof CORE_AGENT_KEYS)[number]>().toEqualTypeOf<
-      'summarize-text' | 'research-topic'
+      'summarize-text' | 'research-topic' | 'triage-research'
     >()
     expectTypeOf<(typeof CORE_AGENT_KEYS)[number]>().toMatchTypeOf<AgentKey>()
     // A plugin's subjects union in beside the kit's; naming one is that plugin's own test.

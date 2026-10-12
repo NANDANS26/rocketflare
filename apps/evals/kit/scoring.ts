@@ -135,3 +135,72 @@ export function outputText(output: unknown): string {
   if (output === undefined || output === null) return ''
   return typeof output === 'string' ? output : JSON.stringify(output, null, 2)
 }
+
+// ---- decisions (D37) ----------------------------------------------------------------------------
+
+/** One recorded answer as the agent target reports it: its label and the probabilities behind it. */
+export interface RecordedAnswer {
+  type: 'noul' | 'choice' | 'score'
+  label: string
+  confidence: number
+  /** P(yes) for a noul; the distribution for a choice/score. */
+  noul?: number
+  probabilities?: Record<string, number>
+}
+
+/** decision key → question id → answer. */
+export type RecordedDecisions = Record<string, Record<string, RecordedAnswer>>
+
+/**
+ * How many expected answers the run gave, plus the Brier score over them (lower is better; 0 is a
+ * certain, correct answer, 1 a certain, wrong one). Accuracy is the score; Brier rides in the
+ * rationale because it is what separates a confident right answer from a lucky coin toss — the
+ * difference calibration is for. A question the run never asked counts as wrong.
+ */
+export function decisionScore(
+  recorded: RecordedDecisions,
+  expected: Record<string, Record<string, string>>
+): Score & { brier: number | null } {
+  let total = 0
+  let correct = 0
+  const briers: number[] = []
+  const misses: string[] = []
+  for (const [key, questions] of Object.entries(expected)) {
+    for (const [id, want] of Object.entries(questions)) {
+      total += 1
+      const got = recorded[key]?.[id]
+      if (!got) {
+        misses.push(`${key}.${id}: not asked`)
+        continue
+      }
+      if (got.label === want) correct += 1
+      else misses.push(`${key}.${id}: ${got.label} ≠ ${want}`)
+      const brier = brierOf(got, want)
+      if (brier !== null) briers.push(brier)
+    }
+  }
+  if (total === 0) return { score: 1, rationale: 'no expected decisions', brier: null }
+  const brier = briers.length ? briers.reduce((a, b) => a + b, 0) / briers.length : null
+  const tail = brier === null ? '' : ` · Brier ${brier.toFixed(3)}`
+  return {
+    score: correct / total,
+    rationale:
+      misses.length === 0
+        ? `${correct}/${total} decisions as expected${tail}`
+        : `${correct}/${total} as expected — ${misses.join('; ')}${tail}`,
+    brier,
+  }
+}
+
+function brierOf(answer: RecordedAnswer, want: string): number | null {
+  if (answer.type === 'noul' && answer.noul !== undefined) {
+    const y = want === 'yes' ? 1 : 0
+    return (answer.noul - y) ** 2
+  }
+  if (!answer.probabilities) return null
+  // Multi-class Brier, halved so it sits on the same 0–1 scale as the binary one.
+  const keys = new Set([...Object.keys(answer.probabilities), want])
+  let sum = 0
+  for (const k of keys) sum += ((answer.probabilities[k] ?? 0) - (k === want ? 1 : 0)) ** 2
+  return sum / 2
+}

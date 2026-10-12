@@ -63,6 +63,12 @@ export function RunUsageTab({
         <Row label="Questions asked" value={String(stats.asks)} />
         <Row label="Notes sent" value={String(stats.steeringNotes)} />
         <Row label="Artifacts" value={String(stats.artifacts)} />
+        {stats.decisions > 0 && (
+          <Row
+            label="Decisions"
+            value={`${stats.decisions} · ${stats.questions} question${stats.questions === 1 ? '' : 's'}`}
+          />
+        )}
         <Row label="Errors" value={String(stats.errors)} />
         <Row label="Retries" value={String(stats.retries)} />
       </Section>

@@ -37,8 +37,9 @@ Cloudflare Worker (`apps/web`), a CLI (`apps/cli`), private zod contracts
 - **AI**: `services/ai/resolve` (`agent_models` → tenant `ai_configs` → platform key → Workers AI via
   `[ai]`, zero key → 503); Anthropic / OpenAI-compatible / Workers AI chat streamed as **AG-UI**
   (`@ag-ui/core` pinned; SSE or protobuf; `POST /api/agui/run` is the protocol endpoint), chat calls
-  the knowledge tools, agents on `AGENT_RUN_WORKFLOW` (projected to AG-UI on read), Workers AI →
-  pgvector (uploads: R2 → `AI.toMarkdown` → pgvector), OTLP tracing (D32: GenAI
+  the knowledge tools, agents on `AGENT_RUN_WORKFLOW` (projected to AG-UI on read) with typed
+  decisions (`ctx.decide`, D37: TypeSafe's Jev as the `decisions` scope, else the chat model),
+  Workers AI → pgvector (uploads: R2 → `AI.toMarkdown` → pgvector), OTLP tracing (D32: GenAI
   spans → Langfuse/Phoenix/any backend, always also `ai_spans` → `rocketflare traces`); evals (D33:
   `apps/evals`, vitest-evals on vitest 4, `pnpm eval`, never in the gate) + thumbs feedback →
   `rocketflare evals promote`

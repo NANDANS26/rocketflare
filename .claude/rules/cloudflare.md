@@ -57,7 +57,7 @@ workspace root) or through the root scripts (`pnpm deploy[:staging]`, `pnpm prov
   `OBSERVABILITY_TRACE_URL`, `LANGFUSE_BASE_URL` and `LANGFUSE_TRACING_ENVIRONMENT` default in
   `config.ts` and are added to BOTH files only when used (the parity test compares `[vars]` keys;
   the tomls carry them as a comment). AI secrets: `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`,
-  `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `OTEL_EXPORTER_OTLP_HEADERS` (`k=v,k=v`) — all optional
+  `TYPESAFE_API_KEY` (D37, decisions), `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `OTEL_EXPORTER_OTLP_HEADERS` (`k=v,k=v`) — all optional
 
 ## Two tomls, one shape (D6)
 

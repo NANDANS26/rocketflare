@@ -1,6 +1,7 @@
 /**
  * Hybrid retrieval over `chunks` (D17, D18): dense cosine (`<=>` on the pgvector HNSW index) +
- * Postgres full-text (`websearch_to_tsquery` / `ts_rank_cd` over `to_tsvector('english', text)`),
+ * Postgres full-text (ANY query term — `anyTermTsquery` — ranked by `ts_rank_cd` over
+ * `to_tsvector('english', text)`),
  * fused by Reciprocal Rank Fusion (`RRF_K = 60`). Each signal retrieves a wide candidate pool, the
  * fusion decides the order, the top `limit` come back with `denseRank`/`lexicalRank` so "did the
  * vector search find this or only the keyword one?" is answerable. Each hit also says WHERE in its
@@ -38,6 +39,24 @@ export const SEARCH_TEXT_CONFIG = 'english'
  * `chunks` to `documents`.
  */
 export const chunkCharOffsetSql = sql<number>`position(${chunks.text} in coalesce(${documents.content}, ''))`
+
+/** Most words the lexical half ORs together; a pasted paragraph is not a keyword query. */
+export const LEXICAL_MAX_TERMS = 32
+
+/**
+ * The lexical half's query: every distinct word of the input, OR-ed (`a | b | c`), for
+ * `to_tsquery(SEARCH_TEXT_CONFIG, …)` to stem and stopword. ANY rather than ALL terms on purpose —
+ * `websearch_to_tsquery` ANDs every word, so a natural-language question ("pedestrian segregation,
+ * I want to know about it") matched only passages that also contained "want" and "know", i.e.
+ * nothing, and the half that exists to catch exact terms the vectors miss went silent exactly when
+ * a person typed a sentence. `ts_rank_cd` still ranks a passage with more (and denser) matching
+ * terms first, so precision comes from the ranking, not from the filter. Only `\p{L}`/`\p{N}`
+ * runs survive, so nothing a person types can be tsquery syntax. Null = no searchable word.
+ */
+export function anyTermTsquery(query: string): string | null {
+  const words = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
+  return words.length ? words.slice(0, LEXICAL_MAX_TERMS).join(' | ') : null
+}
 
 /** "Retrieve wide, fuse narrow": how many candidates each signal contributes before fusion. */
 export function candidatePoolSize(limit: number): number {
@@ -180,6 +199,7 @@ async function runSearch(
       .orderBy(sql`${chunks.embedding} <=> ${vec}::vector`)
       .limit(pool)
 
+  const terms = anyTermTsquery(request.query)
   const [dense, lexical] = await Promise.all([
     visible
       ? db.transaction(async tx => {
@@ -187,20 +207,22 @@ async function runSearch(
           return denseQuery(tx)
         })
       : denseQuery(db),
-    db
-      .select(select)
-      .from(chunks)
-      .innerJoin(documents, eq(documents.id, chunks.documentId))
-      .where(
-        and(
-          scope,
-          sql`to_tsvector(${SEARCH_TEXT_CONFIG}, ${chunks.text}) @@ websearch_to_tsquery(${SEARCH_TEXT_CONFIG}, ${request.query})`
-        )
-      )
-      .orderBy(
-        sql`ts_rank_cd(to_tsvector(${SEARCH_TEXT_CONFIG}, ${chunks.text}), websearch_to_tsquery(${SEARCH_TEXT_CONFIG}, ${request.query})) DESC`
-      )
-      .limit(pool),
+    terms
+      ? db
+          .select(select)
+          .from(chunks)
+          .innerJoin(documents, eq(documents.id, chunks.documentId))
+          .where(
+            and(
+              scope,
+              sql`to_tsvector(${SEARCH_TEXT_CONFIG}, ${chunks.text}) @@ to_tsquery(${SEARCH_TEXT_CONFIG}, ${terms})`
+            )
+          )
+          .orderBy(
+            sql`ts_rank_cd(to_tsvector(${SEARCH_TEXT_CONFIG}, ${chunks.text}), to_tsquery(${SEARCH_TEXT_CONFIG}, ${terms})) DESC`
+          )
+          .limit(pool)
+      : Promise.resolve([] as Candidate[]),
   ])
 
   const fused = fuseByRank<Candidate>(dense, lexical, c => c.id).slice(0, limit)
