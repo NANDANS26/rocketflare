@@ -56,7 +56,10 @@ function RunAgentForm({
   agent: AgentInfo
   onStarted: (run: CreateAgentRunResponse) => void
 }) {
-  const form = formFor(agent)
+  // Built ONCE per mounted form (the parent keys it by agent): `schemaForm` returns a fresh
+  // `Component` on every call, and a new component type each render remounts the fields — the
+  // input loses focus after every keystroke.
+  const [form] = useState(() => formFor(agent))
   const create = useCreateAgentRun()
   const [draft, setDraft] = useState<unknown>(form.initial)
   const [issues, setIssues] = useState<Issue[] | undefined>()

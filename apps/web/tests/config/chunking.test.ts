@@ -12,7 +12,14 @@ import {
   estimateTokens,
   overlapTail,
 } from '@/api/services/ai/chunking'
-import { candidatePoolSize, fuseByRank, RRF_K, vectorLiteral } from '@/api/services/ai/retrieval'
+import {
+  anyTermTsquery,
+  candidatePoolSize,
+  fuseByRank,
+  LEXICAL_MAX_TERMS,
+  RRF_K,
+  vectorLiteral,
+} from '@/api/services/ai/retrieval'
 
 const words = (n: number, w = 'lorem') => Array.from({ length: n }, (_, i) => `${w}${i}`).join(' ')
 
@@ -92,6 +99,17 @@ describe('fuseByRank (RRF)', () => {
     expect(fuseByRank<string>([], [], key)).toEqual([])
     expect(fuseByRank(['z'], ['a'], key).map(f => f.item)).toEqual(['a', 'z'])
   })
+  it('anyTermTsquery ORs the distinct words and lets no tsquery syntax through', () => {
+    expect(anyTermTsquery('Pedestrian segregation, I want to know about it')).toBe(
+      'pedestrian | segregation | i | want | to | know | about | it'
+    )
+    expect(anyTermTsquery('a & b | !c <-> "d" a')).toBe('a | b | c | d')
+    expect(anyTermTsquery('Größe 42 café')).toBe('größe | 42 | café')
+    expect(anyTermTsquery('  ?!  ')).toBeNull()
+    const long = Array.from({ length: 50 }, (_, i) => `w${i}`).join(' ')
+    expect(anyTermTsquery(long)?.split(' | ')).toHaveLength(LEXICAL_MAX_TERMS)
+  })
+
   it('candidatePoolSize retrieves wide; vectorLiteral is pgvector text', () => {
     expect(candidatePoolSize(5)).toBe(50)
     expect(candidatePoolSize(20)).toBe(80)

@@ -11,7 +11,8 @@ import { z } from 'zod'
  * v1 provider set. `anthropic_compatible` = Anthropic wire format behind a bearer token
  * (Fireworks, Moonshot presets); `openai_compatible` = `/v1/chat/completions` + `/v1/embeddings`
  * behind a bearer token (any vLLM/Ollama/proxy). `workers_ai` is the zero-key binding — embeddings
- * AND chat, the floor every workspace can fall back to.
+ * AND chat, the floor every workspace can fall back to. `typesafe` is TypeSafe's Jev (D37): typed
+ * judgments with probabilities, never text — it serves the `decisions` scope and nothing else.
  * Append values LAST — a Postgres enum cannot use a value in the migration that adds it.
  */
 export const AI_PROVIDERS = [
@@ -20,12 +21,16 @@ export const AI_PROVIDERS = [
   'openai',
   'openai_compatible',
   'workers_ai',
+  'typesafe',
 ] as const
 export const aiProviderSchema = z.enum(AI_PROVIDERS)
 export type AiProvider = z.infer<typeof aiProviderSchema>
 
-/** Which client a config feeds: the chat/completion client or the embeddings client. */
-export const AI_SCOPES = ['chat', 'embeddings'] as const
+/**
+ * Which client a config feeds: the chat/completion client, the embeddings client, or the
+ * decisions client behind `ctx.decide` (D37 — typed questions answered with probabilities).
+ */
+export const AI_SCOPES = ['chat', 'embeddings', 'decisions'] as const
 export const aiScopeSchema = z.enum(AI_SCOPES)
 export type AiScope = z.infer<typeof aiScopeSchema>
 
@@ -125,7 +130,8 @@ export const testAiConfigResponseSchema = z.object({
 })
 export type TestAiConfigResponse = z.infer<typeof testAiConfigResponseSchema>
 
-export const aiReadinessSourceSchema = z.enum(['tenant', 'platform', 'none'])
+/** `fallback` (decisions only): no TypeSafe key, so `ctx.decide` asks the chat model instead. */
+export const aiReadinessSourceSchema = z.enum(['tenant', 'platform', 'fallback', 'none'])
 export type AiReadinessSource = z.infer<typeof aiReadinessSourceSchema>
 
 export const aiScopeReadinessSchema = z.object({
@@ -136,10 +142,15 @@ export const aiScopeReadinessSchema = z.object({
 })
 export type AiScopeReadiness = z.infer<typeof aiScopeReadinessSchema>
 
-/** `GET /api/ai/config/readiness` — what `resolveChat` / `resolveEmbeddings` WOULD pick, no 503. */
+/** `GET /api/ai/config/readiness` — what each `resolve*` WOULD pick, no 503. */
 export const aiReadinessSchema = z.object({
   chat: aiScopeReadinessSchema,
   embeddings: aiScopeReadinessSchema,
+  /**
+   * `source: 'fallback'` = no TypeSafe key, so `ctx.decide` asks the chat model for its own
+   * probabilities (uncalibrated); provider/model are then the chat model's. Ready iff chat is.
+   */
+  decisions: aiScopeReadinessSchema,
 })
 export type AiReadiness = z.infer<typeof aiReadinessSchema>
 
@@ -150,6 +161,7 @@ export const DEFAULT_MODELS: Record<AiProvider, string> = {
   openai: 'text-embedding-3-small',
   openai_compatible: '',
   workers_ai: '@cf/baai/bge-m3',
+  typesafe: 'jev-latest',
 }
 
 /**

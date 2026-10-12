@@ -24,6 +24,7 @@
  */
 
 import type { AccessScope } from '../../api/services/access-sql'
+import type { AgentDecide } from '../../api/services/agents/decisions'
 import type { AgentContext, AgentDefinition } from '../../api/services/agents/registry'
 import type { AgentToolContext } from '../../api/services/agents/tools'
 import { AiNotConfiguredError } from '../../api/services/ai/errors'
@@ -37,6 +38,14 @@ import { callStructuredTool, runToolLoop, toolInputSchema } from '../../api/serv
 import { recordUsage } from '../../api/services/ai/usage'
 import type { Database, PluginBindings, PluginConfig } from './types'
 
+export type {
+  AgentDecide,
+  Decision,
+  PickOptions,
+  PickResult,
+  SiftOptions,
+  SiftResult,
+} from '../../api/services/agents/decisions'
 export type { AgentContext, AgentDefinition } from '../../api/services/agents/registry'
 export type { AgentToolContext } from '../../api/services/agents/tools'
 export type {
@@ -142,6 +151,13 @@ export interface AgentCtx<Input = unknown> {
   toolLoop(options: PluginToolLoopOptions): Promise<ToolLoopResult>
   /** One forced tool call, zod-validated, one retry with the issues fed back. */
   structured<T>(options: PluginStructuredOptions<T>): Promise<T>
+  /**
+   * Typed questions answered with probabilities (D37): `decide(key, { state, questions })`,
+   * `decide.sift(key, …)`, `decide.pick(key, …)`. The tenant's decisions engine answers —
+   * TypeSafe's Jev, or the chat model's uncalibrated fallback — and every call is recorded once per
+   * `key`, so `key` must be stable across attempts, exactly like `once`.
+   */
+  decide: AgentDecide
 }
 
 /** `runToolLoop` minus what the runtime supplies. */
@@ -180,6 +196,7 @@ export function agentCtx<Input>(ctx: AgentContext<Input>): AgentCtx<Input> {
     step: (key, label, status, detail) => ctx.step(key, label, status, detail),
     checkCancelled: () => ctx.checkCancelled(),
     once: (key, fn) => ctx.once(key, fn),
+    decide: ctx.decide,
     toolLoop: options =>
       runToolLoop(ctx.chat.client, {
         ...options,

@@ -11,10 +11,12 @@
  * projection read.
  */
 import type { AgentKey } from '@rocketflare/shared/ai/agents'
+import { decisionAnswerLabel } from '@rocketflare/shared/ai/decisions'
 import type { EvalCase } from '@rocketflare/shared/ai/evals'
 import { and, asc, eq } from 'drizzle-orm'
 import { createHarness, type Harness, type JsonValue } from 'vitest-evals'
 import { withEvalScope } from '@/api/observability/context'
+import { listDecisions } from '@/api/services/agents/decisions'
 import { getAgent } from '@/api/services/agents/registry'
 import { enqueueRun, getRun } from '@/api/services/agents/runs'
 import {
@@ -28,6 +30,7 @@ import { getPrompt } from '@/api/services/prompts'
 import { loggerFor } from '@/api/utils/core/logger'
 import { agentRunEvents } from '@/db/schema'
 import { caseWorld } from './fixtures'
+import type { RecordedDecisions } from './scoring'
 import { promptHash, tenantSpend } from './spend'
 import { transcriptFromRunEvents } from './transcript'
 
@@ -76,6 +79,22 @@ export function agentHarness(agentKey: AgentKey): Harness<EvalCase, JsonValue | 
       const transcript = transcriptFromRunEvents(events, row.input, output, row.error)
       // The TEMPLATE (override or default), not the interpolated text: every case has its own
       // tenant name, and "which prompt ran" must hash the same across cases.
+      // D37: every `ctx.decide` answer, keyed for `DecisionJudge` — read from the table, not a model.
+      const decisions: RecordedDecisions = {}
+      for (const d of await listDecisions(world.db, world.tenantId, runId)) {
+        decisions[d.key] = Object.fromEntries(
+          Object.entries(d.answers).map(([id, a]) => [
+            id,
+            {
+              type: a.type,
+              label: decisionAnswerLabel(a),
+              confidence: a.confidence,
+              ...(a.noul !== undefined && { noul: a.noul }),
+              ...(a.probabilities && { probabilities: a.probabilities }),
+            },
+          ])
+        )
+      }
       const prompt = (await getPrompt(world.db, world.tenantId, agent.meta.promptKey as 'chat'))
         .effectiveText
       return {
@@ -92,6 +111,7 @@ export function agentHarness(agentKey: AgentKey): Harness<EvalCase, JsonValue | 
           runId,
           promptKey: agent.meta.promptKey,
           promptHash: promptHash(prompt),
+          decisions: decisions as unknown as JsonValue,
         },
       }
     },

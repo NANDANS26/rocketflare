@@ -51,6 +51,7 @@ const run = (over: Partial<Parameters<typeof aguiRun>[0]> = {}) =>
 const READY = {
   chat: { ready: true, source: 'tenant', provider: 'anthropic', model: 'claude-sonnet-4-5' },
   embeddings: { ready: false, source: 'none' },
+  decisions: { ready: false, source: 'none' },
 }
 
 function mount(routes: RouteTable, session = makeSession()) {
@@ -255,6 +256,7 @@ describe('Chat page', () => {
         '/api/ai/config/readiness': {
           chat: { ready: false, source: 'none' },
           embeddings: { ready: false, source: 'none' },
+          decisions: { ready: false, source: 'none' },
         },
         [`/api/chat/conversations/${CONV}`]: { ...conversation, messages: [] },
       },

@@ -1,5 +1,6 @@
 /**
- * Settings → AI (D17): readiness for `chat` and `embeddings` (what the resolver WOULD pick, with
+ * Settings → AI (D17): readiness for `chat`, `embeddings` and `decisions` (D37 — TypeSafe's Jev
+ * behind `ctx.decide`; without one the chat model answers, uncalibrated) — what the resolver WOULD pick, with
  * its source), then one table per scope — label, provider, model, default and credential badges,
  * and for `manage AiConfig` holders: set default, test, edit, delete. Members (`read`) see the
  * readiness and a read-only list. Credentials never reach the browser (`hasCredential` only).
@@ -45,7 +46,24 @@ const SCOPES: { scope: AiScope; title: string; description: string }[] = [
     title: 'Embedding providers',
     description: 'Turn text into vectors for search. Workers AI needs no key.',
   },
+  {
+    scope: 'decisions',
+    title: 'Decision providers',
+    description:
+      'Answer the typed questions agents ask (ctx.decide) with calibrated probabilities. Without one, the chat model answers with its own, uncalibrated numbers.',
+  },
 ]
+
+const SCOPE_TITLE: Record<AiScope, string> = {
+  chat: 'Chat',
+  embeddings: 'Embeddings',
+  decisions: 'Decisions',
+}
+const SCOPE_NOUN: Record<AiScope, string> = {
+  chat: 'chat',
+  embeddings: 'embedding',
+  decisions: 'decision',
+}
 
 type ModalTarget = { scope: AiScope; editing: AiConfig | null } | null
 
@@ -66,23 +84,19 @@ export default function AiSettings() {
         description="What answers this workspace right now, and where that comes from."
       >
         {readiness.isLoading ? (
-          <SkeletonRows rows={2} />
+          <SkeletonRows rows={3} />
         ) : readiness.data ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <ReadinessCard
-              scope="chat"
-              readiness={readiness.data.chat}
-              providerName={providerName}
-              canManage={canManage}
-              onConfigure={() => setModal({ scope: 'chat', editing: null })}
-            />
-            <ReadinessCard
-              scope="embeddings"
-              readiness={readiness.data.embeddings}
-              providerName={providerName}
-              canManage={canManage}
-              onConfigure={() => setModal({ scope: 'embeddings', editing: null })}
-            />
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(16rem,1fr))] gap-3">
+            {SCOPES.map(({ scope }) => (
+              <ReadinessCard
+                key={scope}
+                scope={scope}
+                readiness={readiness.data[scope]}
+                providerName={providerName}
+                canManage={canManage}
+                onConfigure={() => setModal({ scope, editing: null })}
+              />
+            ))}
           </div>
         ) : (
           <p className="text-sm text-error" role="alert">
@@ -136,7 +150,13 @@ function ReadinessCard({
   canManage: boolean
   onConfigure: () => void
 }) {
-  const title = scope === 'chat' ? 'Chat' : 'Embeddings'
+  const title = SCOPE_TITLE[scope]
+  const sourceLabel =
+    readiness.source === 'tenant'
+      ? 'this workspace'
+      : readiness.source === 'fallback'
+        ? 'chat model fallback, uncalibrated'
+        : 'platform default'
   return (
     <div className="surface-inset rounded-lg p-3 flex flex-col gap-2" data-scope={scope}>
       <div className="flex items-center justify-between gap-2">
@@ -159,7 +179,7 @@ function ReadinessCard({
             </>
           )}
           {' · '}
-          {readiness.source === 'tenant' ? 'this workspace' : 'platform default'}
+          {sourceLabel}
         </p>
       ) : canManage ? (
         <button
@@ -237,7 +257,7 @@ function ScopeSection({
         canManage && (
           <button type="button" className="btn btn-primary btn-sm gap-1.5" onClick={onAdd}>
             <PlusIcon className="w-4 h-4" />
-            Add {scope === 'chat' ? 'chat' : 'embedding'} provider
+            Add {SCOPE_NOUN[scope]} provider
           </button>
         )
       }
@@ -246,11 +266,13 @@ function ScopeSection({
         <EmptyState
           icon={SparklesIcon}
           size="sm"
-          message={`No ${scope} providers configured`}
+          message={`No ${SCOPE_NOUN[scope]} providers configured`}
           description={
-            canManage
-              ? 'The platform default answers until you add one.'
-              : 'The platform default answers, if one is set.'
+            scope === 'decisions'
+              ? 'The platform TypeSafe key answers if one is set; otherwise the chat model does.'
+              : canManage
+                ? 'The platform default answers until you add one.'
+                : 'The platform default answers, if one is set.'
           }
         />
       ) : (

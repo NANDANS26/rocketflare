@@ -26,6 +26,7 @@ import {
   toAguiInterrupt,
 } from '@rocketflare/shared/ai/agui'
 import type { AgentArtifact } from '@rocketflare/shared/ai/artifacts'
+import { agentDecisionEventDataSchema } from '@rocketflare/shared/ai/decisions'
 import { documentCardsFromToolResult } from '@rocketflare/shared/ai/embeddings'
 import type { AgentRunInterrupt } from '@rocketflare/shared/ai/interrupts'
 import {
@@ -259,6 +260,11 @@ export function createRunProjector(run: AgentRun): RunProjector {
           const id = asString(data.artifactId) ?? ''
           const artifact = (context.artifacts ?? []).find(row => row.id === id)
           if (artifact) out.push(kitCustom(KIT_CUSTOM_EVENTS.agentArtifact, { artifact }))
+          break
+        }
+        case 'decision': {
+          const parsed = agentDecisionEventDataSchema.safeParse(event.data)
+          if (parsed.success) out.push(kitCustom(KIT_CUSTOM_EVENTS.agentDecision, parsed.data))
           break
         }
         case 'error': {

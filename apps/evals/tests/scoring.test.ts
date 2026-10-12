@@ -4,6 +4,7 @@ import { z } from 'zod'
 import {
   budgetScore,
   containsScore,
+  decisionScore,
   expectedToolNames,
   outputText,
   regexScore,
@@ -81,5 +82,43 @@ describe('the other scorers', () => {
     expect(expectedToolNames(['a', { name: 'b', arguments: { q: 1 } }])).toEqual(['a', 'b'])
     expect(outputText(null)).toBe('')
     expect(outputText({ a: 1 })).toBe('{\n  "a": 1\n}')
+  })
+})
+
+describe('decisionScore (D37)', () => {
+  const recorded = {
+    answerable: { answerable: { type: 'noul' as const, label: 'yes', confidence: 0.8, noul: 0.9 } },
+    route: {
+      team: {
+        type: 'choice' as const,
+        label: 'billing',
+        confidence: 0.4,
+        probabilities: { billing: 0.6, support: 0.4 },
+      },
+    },
+  }
+
+  it('scores accuracy per expected question and reports the Brier score', () => {
+    const all = decisionScore(recorded, {
+      answerable: { answerable: 'yes' },
+      route: { team: 'billing' },
+    })
+    expect(all.score).toBe(1)
+    // noul (0.9 − 1)² = 0.01; choice ((0.6 − 1)² + 0.4²) / 2 = 0.16 → mean 0.085
+    expect(all.brier).toBeCloseTo(0.085)
+    expect(all.rationale).toContain('Brier')
+
+    const half = decisionScore(recorded, {
+      answerable: { answerable: 'no' },
+      route: { team: 'billing' },
+    })
+    expect(half.score).toBe(0.5)
+    expect(half.rationale).toContain('answerable.answerable: yes ≠ no')
+  })
+
+  it('counts a question the run never asked as wrong', () => {
+    const r = decisionScore(recorded, { screen: { item_0: 'yes' } })
+    expect(r.score).toBe(0)
+    expect(r.rationale).toContain('not asked')
   })
 })

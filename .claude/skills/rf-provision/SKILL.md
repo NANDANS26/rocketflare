@@ -55,7 +55,7 @@ run from here (exit 2) — that is deliberate. If they are missing, tell the use
      (`pnpm provision tokens --skip-email` skips that prompt).
    - Optional, same file (the `secrets` phase copies them to the Worker): `GOOGLE_CLIENT_ID/SECRET`,
      `MICROSOFT_CLIENT_ID/SECRET`, `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`,
-     `LANGFUSE_PUBLIC_KEY/SECRET_KEY`.
+     `TYPESAFE_API_KEY`, `LANGFUSE_PUBLIC_KEY/SECRET_KEY`.
 2. `! pnpm provision tokens` in their terminal (or fill the file). A CI job exports the variables
    instead; an exported variable always wins over the file.
 3. Log in to the two CLIs themselves (these open a browser; you cannot do it for them):

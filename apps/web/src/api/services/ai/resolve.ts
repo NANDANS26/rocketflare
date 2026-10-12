@@ -4,6 +4,9 @@
  *               `workers_ai` (`WORKERS_AI_CHAT_MODEL`) if `env.AI` → 503
  *   embeddings: tenant default `ai_configs(scope='embeddings')` → `workers_ai` if `env.AI` →
  *               `EMBEDDINGS_API_KEY` (OpenAI) → 503
+ *   decisions:  tenant default `ai_configs(scope='decisions')` (TypeSafe) → platform
+ *               `TYPESAFE_API_KEY` → the chat model on prompt key `agent-decide` (D37, the
+ *               uncalibrated `llm_self_report` fallback) → 503 from `resolveChat`
  * Credentials are decrypted here and nowhere else. `readiness()` mirrors both orders WITHOUT
  * building a client or throwing (the Home checklist must not turn a page load into a 503).
  * Feature code never queries `ai_configs`; the chat route, connection test and Phase 3b agents
@@ -21,6 +24,7 @@ import type {
   AiScopeReadiness,
 } from '@rocketflare/shared/ai/config'
 import { DEFAULT_MODELS, WORKERS_AI_CHAT_MODEL } from '@rocketflare/shared/ai/config'
+import type { DecisionMethod } from '@rocketflare/shared/ai/decisions'
 import type { PromptKey } from '@rocketflare/shared/ai/prompts'
 import { and, eq } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
@@ -28,8 +32,11 @@ import type { Database } from '../../../db/client'
 import { type AgentModelRow, type AiConfigRow, agentModels, aiConfigs } from '../../../db/schema'
 import { decrypt, requireEncryptionKey } from '../../auth/oauth-encryption'
 import { createChatClient, createEmbeddingsClient, type FetchLike } from './client'
+import { createLlmDecisionClient } from './decisions/llm'
+import type { DecisionClient } from './decisions/types'
+import { createTypesafeClient } from './decisions/typesafe'
 import { AiNotConfiguredError } from './errors'
-import type { AiEnv, ChatClient, EmbeddingsClient } from './types'
+import type { AiEnv, ChatClient, EmbeddingsClient, SystemPrompt } from './types'
 
 export interface ResolvedChat {
   client: ChatClient
@@ -49,6 +56,19 @@ export interface ResolvedEmbeddings {
   source: 'tenant' | 'platform'
   configId?: string
 }
+
+export interface ResolvedDecisions {
+  client: DecisionClient
+  provider: AiProvider
+  model: string
+  method: DecisionMethod
+  /** `fallback` = no TypeSafe key anywhere, so the chat model answers (uncalibrated). */
+  source: 'tenant' | 'platform' | 'fallback'
+  configId?: string
+}
+
+/** The prompt key the decisions fallback resolves its chat model and system prompt on. */
+export const DECISIONS_FALLBACK_PROMPT_KEY = 'agent-decide'
 
 export interface ResolveOptions {
   /** Per-agent config/model lookup keyed on the prompt registry (`agent_models`). Chat only. */
@@ -187,6 +207,72 @@ export async function embeddingsClientFromRow(
   })
 }
 
+/** Build a decisions client from ONE config row (TypeSafe) — the connection test probes through it. */
+export async function decisionsClientFromRow(
+  row: AiConfigRow,
+  cfg: AppConfig,
+  fetchImpl?: FetchLike
+): Promise<DecisionClient> {
+  const apiKey = await credentialOf(row, cfg)
+  if (row.provider !== 'typesafe' || !apiKey) {
+    throw new Error(`ai_configs row ${row.id} is not a usable decisions provider`)
+  }
+  return createTypesafeClient({ apiKey, baseUrl: row.baseUrl, fetch: fetchImpl })
+}
+
+/**
+ * The client behind `ctx.decide` (D37). `fallbackSystem` is the resolved `agent-decide` prompt —
+ * the caller resolves it (prompts are read through `resolvePrompt`, which this module does not
+ * import) and it is used only when the chain lands on the chat model.
+ */
+export async function resolveDecisions(
+  db: Database,
+  cfg: AppConfig,
+  env: AiEnv,
+  tenantId: string,
+  options: ResolveOptions & {
+    fallbackSystem: SystemPrompt
+    /** Wraps the fallback's chat client — the runtime passes `traceChatClient` so its calls are spans. */
+    wrapChat?: (client: ChatClient, provider: AiProvider) => ChatClient
+  }
+): Promise<ResolvedDecisions> {
+  const row = await findDefaultConfig(db, tenantId, 'decisions')
+  if (row) {
+    return {
+      client: await decisionsClientFromRow(row, cfg, options.fetch),
+      provider: row.provider,
+      model: row.model,
+      method: 'typesafe',
+      source: 'tenant',
+      configId: row.id,
+    }
+  }
+  if (cfg.TYPESAFE_API_KEY) {
+    return {
+      client: createTypesafeClient({ apiKey: cfg.TYPESAFE_API_KEY, fetch: options.fetch }),
+      provider: 'typesafe',
+      model: DEFAULT_MODELS.typesafe,
+      method: 'typesafe',
+      source: 'platform',
+    }
+  }
+  const chat = await resolveChat(db, cfg, env, tenantId, {
+    promptKey: DECISIONS_FALLBACK_PROMPT_KEY,
+    fetch: options.fetch,
+  })
+  return {
+    client: createLlmDecisionClient({
+      chat: options.wrapChat ? options.wrapChat(chat.client, chat.provider) : chat.client,
+      system: options.fallbackSystem,
+    }),
+    provider: chat.provider,
+    model: chat.model,
+    method: 'llm_self_report',
+    source: 'fallback',
+    configId: chat.configId,
+  }
+}
+
 export async function resolveChat(
   db: Database,
   cfg: AppConfig,
@@ -266,16 +352,17 @@ export async function resolveEmbeddings(
   throw new AiNotConfiguredError('embeddings')
 }
 
-/** What the two resolvers WOULD pick — no client is built, no credential decrypted, nothing thrown. */
+/** What the three resolvers WOULD pick — no client is built, no credential decrypted, nothing thrown. */
 export async function readiness(
   db: Database,
   cfg: AppConfig,
   env: AiEnv,
   tenantId: string
 ): Promise<AiReadiness> {
-  const [chatRow, embRow] = await Promise.all([
+  const [chatRow, embRow, decisionsRow] = await Promise.all([
     findDefaultConfig(db, tenantId, 'chat'),
     findDefaultConfig(db, tenantId, 'embeddings'),
+    findDefaultConfig(db, tenantId, 'decisions'),
   ])
   const none: AiScopeReadiness = { ready: false, source: 'none' }
   const platform = platformChat(cfg, env)
@@ -296,5 +383,12 @@ export async function readiness(
       : cfg.EMBEDDINGS_API_KEY
         ? { ready: true, source: 'platform', provider: 'openai', model: DEFAULT_MODELS.openai }
         : none
-  return { chat, embeddings }
+  const decisions: AiScopeReadiness = decisionsRow
+    ? { ready: true, source: 'tenant', provider: decisionsRow.provider, model: decisionsRow.model }
+    : cfg.TYPESAFE_API_KEY
+      ? { ready: true, source: 'platform', provider: 'typesafe', model: DEFAULT_MODELS.typesafe }
+      : chat.ready
+        ? { ready: true, source: 'fallback', provider: chat.provider, model: chat.model }
+        : none
+  return { chat, embeddings, decisions }
 }

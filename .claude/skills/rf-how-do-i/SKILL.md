@@ -128,6 +128,15 @@ ones their slice touches, and say what enforces each, so the rule is a test and 
   behaviour change updates `docs/CONCEPTS.md` in the same PR. Raw SQL goes through the driver
   seam (`apps/web/src/db/CLAUDE.md`): `rows()`, `isUniqueViolation()`, session state only inside a
   transaction.
+- **An agent that classifies, routes, screens or picks uses `ctx.decide`, not a prompt** (D37).
+  When their feature has a step like "is this relevant?", "which team?", "how severe?", "which of
+  these records is the customer?", coach it as a typed question (`noul` / `choice` / `score`, or
+  `ctx.decide.sift` / `.pick`) whose answer and `confidence` their CODE branches on — the threshold
+  is a number they can test, and every answer is a row in `agent_run_decisions` an eval can score
+  without a model call (`DecisionJudge`). Copy `examples/triage-research.ts`. Two traps it fails
+  them on: the decision key must be stable across attempts (a reused key with different questions
+  FAILS the run), and the items a decision is about must be frozen behind `ctx.once` first. Without
+  a TypeSafe key the chat model answers, uncalibrated — tell them before they tune a threshold.
 
 Four more when the answer to step 0 was "plugin", and every one of them is a test rather than
 advice:

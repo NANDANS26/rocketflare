@@ -54,7 +54,8 @@
       "LANGFUSE_PUBLIC_KEY",
       "LANGFUSE_SECRET_KEY",
       "OTEL_EXPORTER_OTLP_ENDPOINT",
-      "OTEL_EXPORTER_OTLP_HEADERS"
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      "TYPESAFE_API_KEY"
     ],
     "plain": ["LANGFUSE_PUBLIC_KEY", "OTEL_EXPORTER_OTLP_ENDPOINT"],
     "pluginManifests": "apps/web/src/plugins/*/plugin.json"

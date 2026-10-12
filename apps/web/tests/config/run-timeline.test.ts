@@ -112,6 +112,25 @@ describe('buildTimeline', () => {
     ])
     expect(rows.map(r => r.kind)).toEqual(['interrupt', 'steering', 'artifact'])
   })
+
+  it('reads a decision (D37) and counts its questions; a malformed one stays visible as unknown', () => {
+    const rows = buildTimeline([
+      ev(1, 'decision', {
+        decisionId: eid(7),
+        key: 'relevant',
+        provider: 'typesafe',
+        method: 'llm_self_report',
+        answers: [
+          { id: 'item_0', type: 'noul', answer: 'yes', confidence: 0.8 },
+          { id: 'item_1', type: 'noul', answer: 'no', confidence: 0.6 },
+        ],
+      }),
+      ev(2, 'decision', { key: 'broken' }),
+    ])
+    expect(rows.map(r => r.kind)).toEqual(['decision', 'unknown'])
+    expect(rows[0]).toMatchObject({ key: 'relevant', method: 'llm_self_report' })
+    expect(selectWorkStats(rows)).toMatchObject({ decisions: 1, questions: 2 })
+  })
 })
 
 describe('groupTimeline', () => {

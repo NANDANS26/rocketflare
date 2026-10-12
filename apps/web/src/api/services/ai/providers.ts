@@ -91,6 +91,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     suggestedModels: {
       chat: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
       embeddings: [],
+      decisions: [],
     },
   },
   {
@@ -111,6 +112,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
         'kimi-k2-0905-preview',
       ],
       embeddings: [],
+      decisions: [],
     },
   },
   {
@@ -126,6 +128,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     suggestedModels: {
       chat: ['gpt-4.1-mini', 'gpt-4.1'],
       embeddings: ['text-embedding-3-small', 'text-embedding-3-large'],
+      decisions: [],
     },
   },
   {
@@ -138,7 +141,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     supportsServiceTier: false,
     defaultModel: DEFAULT_MODELS.openai_compatible,
     presets: presetsFor('openai_compatible'),
-    suggestedModels: { chat: [], embeddings: [] },
+    suggestedModels: { chat: [], embeddings: [], decisions: [] },
   },
   {
     id: 'workers_ai',
@@ -157,7 +160,22 @@ export const PROVIDERS: readonly ProviderInfo[] = [
       // The capability list IS the picker list — see WORKERS_AI_TOOL_CHOICE_MODELS above.
       chat: WORKERS_AI_TOOL_CHOICE_MODELS,
       embeddings: ['@cf/baai/bge-m3', '@cf/baai/bge-large-en-v1.5'],
+      decisions: [],
     },
+  },
+  {
+    // D37: typed judgments with probabilities, never text — so `decisions` is its ONLY scope, and
+    // `decisions` has no other provider (the chat-model fallback is implicit, not a row).
+    id: 'typesafe',
+    name: 'TypeSafe (Jev)',
+    scopes: ['decisions'],
+    needsApiKey: true,
+    needsBaseUrl: false,
+    supportsThinking: false,
+    supportsServiceTier: false,
+    defaultModel: DEFAULT_MODELS.typesafe,
+    presets: [],
+    suggestedModels: { chat: [], embeddings: [], decisions: ['jev-latest'] },
   },
 ]
 

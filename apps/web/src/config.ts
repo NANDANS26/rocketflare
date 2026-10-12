@@ -233,6 +233,8 @@ const coreConfigSchema = z.object({
   OIDC_CLIENT_SECRET: optionalString,
   ANTHROPIC_API_KEY: optionalString,
   EMBEDDINGS_API_KEY: optionalString,
+  /** D37: platform TypeSafe (Jev) key for `ctx.decide`; tenants may set their own in Settings → AI. */
+  TYPESAFE_API_KEY: optionalString,
   LANGFUSE_PUBLIC_KEY: optionalString,
   LANGFUSE_SECRET_KEY: optionalString,
   /** D32: extra OTLP request headers, `k=v,k=v` (values URL-encoded, per the OTel spec). A secret. */

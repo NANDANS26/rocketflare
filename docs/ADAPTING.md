@@ -98,9 +98,11 @@ Each bullet below is a **surface** in `.rocketflare.json`, with an anchor file. 
 `pnpm kit:upgrade` stops offering you that surface's changes forever — no bookkeeping, nothing to
 tell it. That is what makes deleting safe.
 
-- The example agents `apps/web/src/api/services/agents/examples/{summarize-text,research-topic}.ts` —
+- The example agents `apps/web/src/api/services/agents/examples/{summarize-text,research-topic,triage-research}.ts` —
   `summarize-text` is the one-forced-call shape, `research-topic` the tool-loop-over-the-knowledge-base
-  shape; delete whichever you are not copying (keep
+  shape, `triage-research` the decisions shape (D37: `ctx.decide` screens and routes, code decides,
+  `research-topic` is its escalation — so deleting `research-topic` means editing its `escalate`);
+  delete whichever you are not copying (keep
   `services/agents/{registry,runs,runtime}.ts` and `api/workflows/agent-run.ts` — that is the runtime,
   not the example). Removing it touches: `CORE_AGENT_KEYS` + `summarizeText*Schema` +
   `SUMMARIZE_TEXT_MAX_CHARS` in `packages/shared/src/ai/agents.ts`, the `summarize-text` entry in

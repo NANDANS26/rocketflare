@@ -128,6 +128,15 @@ describe('POST /api/ai/documents/ingest + /search', () => {
     expect(body.hits[0]?.score).toBeGreaterThan(body.hits[1]?.score ?? 0)
     expect(body.hits.map(h => h.rank)).toEqual(body.hits.map((_, i) => i + 1))
 
+    // A SENTENCE, not keywords: the lexical half matches ANY term, so the filler words — which no
+    // passage contains — cannot veto the one that matters (they used to: every word was ANDed).
+    const sentence = searchResponseSchema.parse(
+      await json(
+        await search(a.cookie, env, { query: 'I want to know about potassium please', limit: 3 })
+      )
+    )
+    expect(sentence.hits.find(h => h.lexicalRank === 1)?.documentId).toBe(docs[1]?.id)
+
     // Filtered to one document: only its chunks come back.
     const only = searchResponseSchema.parse(
       await json(await search(a.cookie, env, { query: 'banana', documentId: docs[0]?.id }))

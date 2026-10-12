@@ -32,7 +32,8 @@
     "rubric": "States the 30-day window…", // plain-language criteria (Rubric judge)
     "tools": ["search_knowledge"],        // the trajectory (Trajectory judge)
     "toolsMatch": "strict",               // strict | unordered | subset | superset — overrides the suite's mode
-    "contains": ["30 days"]               // substrings, case-insensitive (Contains judge)
+    "contains": ["30 days"],              // substrings, case-insensitive (Contains judge)
+    "decisions": { "answerable": { "answerable": "yes" } } // ctx.decide key → question → label (Decisions judge, D37)
   },
   "tags": ["rag", "holdout"],
   "source": { "kind": "hand" },           // or { kind: 'message'|'agent_run', id, promotedAt, feedback }
@@ -55,6 +56,7 @@ suite threshold (0.7 by default).
 | `SchemaJudge(zodSchema)` | deterministic | the output | 1 / 0, with the first issues |
 | `TrajectoryJudge(mode)` | deterministic | `expected.tools`, `toolsMatch` | 1 / 0 — agentevals semantics: `strict` same order · `unordered` same multiset · `subset` nothing outside · `superset` at least these |
 | `BudgetJudge({ maxMs, maxTokens, maxCostUsd })` | deterministic | usage, timing | 1 / 0 (unknown cost never fails) |
+| `DecisionJudge()` | deterministic | `expected.decisions` + the run's `agent_run_decisions` (`artifacts.decisions`) | fraction of expected answers given; the Brier score (calibration — 0 is certain-and-right) is in the rationale. A question never asked counts as wrong. No model call |
 | `RubricJudge()` | LLM | `expected.rubric` + the material retrieved (else the case context) | pass 1 · partial 0.5 · fail 0 |
 | `FaithfulnessJudge()` | LLM | what retrieval RETURNED (`artifacts.retrieved`) | supported / (supported + unsupported); nothing retrieved → 0 |
 | `ReferenceJudge()` | LLM | `expected.output` | vitest-evals `FactualityJudge` (A 0.4 · B 0.6 · C 1 · D 0 · E 1) |

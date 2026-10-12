@@ -34,6 +34,10 @@ import {
 } from '@rocketflare/shared/ai/agents'
 import type { AgentArtifact } from '@rocketflare/shared/ai/artifacts'
 import { agentArtifactEventDataSchema } from '@rocketflare/shared/ai/artifacts'
+import {
+  type AgentDecisionEventData,
+  agentDecisionEventDataSchema,
+} from '@rocketflare/shared/ai/decisions'
 import type { AgentRunInterrupt } from '@rocketflare/shared/ai/interrupts'
 import {
   agentInterruptEventDataSchema,
@@ -143,6 +147,17 @@ export type TimelineRow =
       artifactId: string
       title: string
       artifactKind: string
+      at: Date
+    }
+  | {
+      kind: 'decision'
+      id: string
+      seq: number
+      decisionId: string
+      key: string
+      provider: string
+      method: AgentDecisionEventData['method']
+      answers: AgentDecisionEventData['answers']
       at: Date
     }
   | { kind: 'unknown'; id: string; seq: number; type: string; data: unknown; at: Date }
@@ -416,6 +431,25 @@ export function buildTimeline(events: readonly TimelineEvent[]): TimelineRow[] {
         )
         break
       }
+      case 'decision': {
+        const parsed = agentDecisionEventDataSchema.safeParse(event.data)
+        rows.push(
+          parsed.success
+            ? {
+                kind: 'decision',
+                id: event.id,
+                seq: event.seq,
+                decisionId: parsed.data.decisionId,
+                key: parsed.data.key,
+                provider: parsed.data.provider,
+                method: parsed.data.method,
+                answers: parsed.data.answers,
+                at: event.at,
+              }
+            : unknownRow(event)
+        )
+        break
+      }
       default:
         rows.push(unknownRow(event))
         break
@@ -555,6 +589,9 @@ export interface RunWorkStats {
   asks: number
   steeringNotes: number
   artifacts: number
+  /** `ctx.decide` calls (D37) and the questions they asked. */
+  decisions: number
+  questions: number
   /** Per-tool totals, busiest first. */
   tools: { name: string; calls: number; totalMs: number | null }[]
 }
@@ -571,6 +608,8 @@ export function selectWorkStats(rows: readonly TimelineRow[]): RunWorkStats {
     asks: 0,
     steeringNotes: 0,
     artifacts: 0,
+    decisions: 0,
+    questions: 0,
     tools: [],
   }
   for (const row of rows) {
@@ -605,6 +644,10 @@ export function selectWorkStats(rows: readonly TimelineRow[]): RunWorkStats {
         break
       case 'artifact':
         stats.artifacts += 1
+        break
+      case 'decision':
+        stats.decisions += 1
+        stats.questions += row.answers.length
         break
       default:
         break

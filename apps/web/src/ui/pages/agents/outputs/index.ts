@@ -12,11 +12,13 @@
 import type { AgentKey } from '@rocketflare/shared/ai/agents'
 import { researchTopicOutput } from './research-topic'
 import { summarizeTextOutput } from './summarize-text'
+import { triageResearchOutput } from './triage-research'
 import type { AgentOutput } from './types'
 
 const AGENT_OUTPUTS: Partial<Record<AgentKey, AgentOutput>> = {
   'summarize-text': summarizeTextOutput as AgentOutput,
   'research-topic': researchTopicOutput as AgentOutput,
+  'triage-research': triageResearchOutput as AgentOutput,
 }
 
 /** `undefined` means "no typed view" — the caller renders the JSON. */

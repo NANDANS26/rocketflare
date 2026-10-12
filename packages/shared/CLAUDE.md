@@ -54,13 +54,16 @@ inline and framable are different properties, `filePath(id)`, `fileSchema`/`uplo
 `uploadQuerySchema` (D23) ·
 `jobs.ts` also carries `document.index` (`{ tenantId, documentId }` — re-index a `documents` row, D18) ·
 **`ai/`** (Phase 3, D17/D18/D32; barrel `ai/index.ts`, deep imports `@rocketflare/shared/ai/<file>` equally valid):
-`config.ts` — `AI_PROVIDERS`/`aiProviderSchema` (append LAST: the DB column is a text enum), `AI_SCOPES`
-(`chat | embeddings`), `thinkingSchema` + `THINKING_*` bounds, `aiConfigSchema` (sanitised row:
+`config.ts` — `AI_PROVIDERS`/`aiProviderSchema` (append LAST: the DB column is a text enum; `typesafe`
+serves `decisions` only), `AI_SCOPES` (`chat | embeddings | decisions`), readiness `source`
+`tenant | platform | fallback | none` (`fallback` = decisions answered by the chat model),
+`thinkingSchema` + `THINKING_*` bounds, `aiConfigSchema` (sanitised row:
 `hasCredential`, never a key), `upsertAiConfigRequestSchema` (`apiKey` write-only), `testAiConfigRequest/ResponseSchema`,
 `aiReadinessSchema`, `DEFAULT_MODELS`, `PROVIDER_PRESETS`/`presetsFor` (vendors are data, not enum values),
 **`EMBEDDING_DIM = 1024`** (the `chunks.embedding` column width — a change is a migration) ·
 `evals.ts` (D33) — `evalCaseSchema` (the dataset line: `id`, `input` string|object, `messages`,
-`context` docs, `expected { output, rubric, tools, toolsMatch, contains }`, `tags`, `source` — a
+`context` docs, `expected { output, rubric, tools, toolsMatch, contains, decisions }` (`decisions`
+= decision key → question id → label, D37), `tags`, `source` — a
 promoted case names the message/run, never the tenant, `agentKey`), `EVAL_TRAJECTORY_MODES`,
 feedback (`FEEDBACK_TARGETS` `message|agent_run`, `feedbackRatingSchema` `1|-1`,
 `createFeedbackRequestSchema`, `feedbackSchema`, list/mine queries and responses,
@@ -98,6 +101,13 @@ deliberately no second `approved` boolean), the inbox contracts, steering, and t
 `interrupt.resolved` event payloads. **It must not import `@ag-ui/core`** (that is `agui.ts` alone,
 where `toAguiInterrupt` lives) **and must not import `./agents`**, which imports IT — two zod modules
 in a cycle crash at module evaluation, not at compile time ·
+`decisions.ts` (D37) — `ctx.decide`'s contract in TypeSafe's vocabulary: `noul`/`choice`/`score`
+question schemas (`instructions`, `criteria`; ids `[A-Za-z0-9_.-]{1,64}` so every provider accepts
+them as tool-schema properties), `decisionRequestSchema` (≤ 100 questions), `decisionAnswerSchema`,
+`DECISION_METHODS` (`typesafe | llm_self_report`), `agentRunDecisionSchema` (the row, on
+`agentRunWithEventsSchema.decisions`), the thin `decision` event payload, and TypeSafe's published
+confidence formulas (`noulConfidence`, `choiceConfidence`; `scoreConfidence` is ours — the formula
+is unpublished) + `decisionAnswerLabel` — the one place both engines and the UI read them ·
 `artifacts.ts` — what a run produces that a person opens: `AGENT_ARTIFACT_KINDS`,
 `agentArtifactDataSchema` (`document`/`file` carry IDS, never content), `agentArtifactSchema` (`key`
 is the upsert key), the thin `artifact` event payload. A table rather than an event type because an
