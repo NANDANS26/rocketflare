@@ -406,6 +406,25 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   evals score decisions per question with `DecisionJudge` (`expected.decisions`, accuracy + Brier)
   without a model call. Why: AgentRun-style decomposition — cheap, recorded, separately testable
   judgments instead of a model turn per decision.
+- **Replay (D38)**: `pnpm web agent:replay <agent> --tenant <slug>` runs the agent's CURRENT code
+  over its settled runs and reports what would change — the change you are about to make, checked
+  against a thousand past cases in minutes, not against production. The replay context answers from
+  the record: `decide` from `agent_run_decisions` (same questions about the same state → `served`;
+  reworded → `drift`; same questions about a different state, because upstream code changed what the
+  decision is about → `stale`), `once` from `agent_run_effects`, `interrupt` from
+  `agent_run_interrupts`; anything the record cannot answer is a MISS (`strict`, the default — no
+  model call at all) or asked for real (`--live`, which also re-runs a `ctx.once(key, fn, { replay:
+  'rerun' })` — a pure model call whose prompt may have changed). `--live` reads the tenant's
+  knowledge base, prompts and model choice as they are TODAY, through the Worker's own resolver —
+  the tenant's configs first, then the Workers AI binding, borrowed through wrangler's
+  `getPlatformProxy` — and warns before starting when knowledge search would be degraded (no
+  provider, or a key where the Worker uses Workers AI: chunks do not record their model, so
+  resolving the SAME tier is the only guard). Each run replays in a READ ONLY
+  transaction and `ctx.db` refuses writes before they are sent (listed, not fatal). Per run: a
+  verdict (`match` / `differs` / `incomplete`), the output diff by JSON path, and each decision's
+  status; exit 1 unless every run matches. `--candidate <file>` replays another definition with the
+  same key — how a compiled variant is proven against the full agent's history. Local script only:
+  no route, no UI. Why: D37 made the judgments recorded; replay makes the CODE around them testable.
 - **Reading runs**: `agent_run_events` is the durable log, and AG-UI is a pure read-time
   projection (`/agui`), also streamed live by tailing `seq` (`/agui/stream`, #7). A read-stream
   failure emits no `RUN_ERROR` (clients reconnect); `id:` goes on the last frame of a row's group,
@@ -509,10 +528,12 @@ does not pre-resolve the client; Workers AI forced tools on off-list models are 
 rerank, no generated `tsvector`; no non-exclusive agents; HITL asks cannot be amended, have no
 reminders, and parks are bounded by instance retention (3 days Free / 30 Paid); runs nobody opens
 stay active-looking; no budgets/quotas over `ai_usage` or prompt versioning. Decisions (D37): no
-replay of an agent's CODE over recorded answers (stored and re-askable, not yet re-runnable), no
 zod-schema → questions compiler, the `llm_self_report` fallback is uncalibrated with no vote/logprob
 mode, TypeSafe calls are unpriced (no published rates), no per-agent decisions provider
-(`agent_models` is chat-only), and a `sift` over 100 items is the caller's to batch. The demo seed's
+(`agent_models` is chat-only), and a `sift` over 100 items is the caller's to batch. Replay (D38): a tool loop's model
+turns are not recorded, so a `runToolLoop` agent (`research-topic`) replays only `--live`; steering
+notes are all handed over at the first call; a run that predates a `once` key misses it; no route
+or UI (a local script over a database URL), and `--live` holds one read-only transaction per run. The demo seed's
 vectors are deterministic, so dense search over seeded docs is noise. Tracing: no per-tenant
 backends (BYO keys via `sealSecret`), no native `tracing.enterSpan`, no metrics export, no
 Langfuse/Phoenix MCP; inline ingest from `POST /api/ai/documents/ingest` is untraced (no active

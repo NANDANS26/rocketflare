@@ -43,6 +43,15 @@ const EPHEMERAL = process.env.TEST_DATABASE_EPHEMERAL === '1'
  */
 const LATENCY_FACTOR = latencyFactor(process.env)
 
+/**
+ * `config` and `kit-only` have no database, but they drive the kit's own tooling END TO END
+ * through child processes — `pnpm plugin add|upgrade`, the bootstrap, the bundle, `tsx` scripts —
+ * and a child process is CPU-bound work that slows with everything else the gate runs beside it
+ * (a 2 s plugin upgrade measured 6 s under the full suite). Their limit is a project setting, not a
+ * per-test number, and it still scales with the factor.
+ */
+const PROCESS_TEST_TIMEOUT = 20_000 * LATENCY_FACTOR
+
 // Forks are capped because each holds its own Postgres connections (test DB runs
 // max_connections=300). Floor 3 = what a 2-vCPU CI runner gets; ceiling 6 is where Postgres
 // becomes the bottleneck. See .claude/rules/testing.md.
@@ -166,6 +175,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'config',
+          testTimeout: PROCESS_TEST_TIMEOUT,
           environment: 'node',
           include: [
             'tests/config/**/*.{test,spec}.ts',
@@ -181,6 +191,7 @@ export default defineConfig({
               extends: true as const,
               test: {
                 name: 'kit-only',
+                testTimeout: PROCESS_TEST_TIMEOUT,
                 environment: 'node',
                 include: ['tests/kit-only/**/*.{test,spec}.ts'],
               },

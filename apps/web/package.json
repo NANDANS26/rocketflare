@@ -49,6 +49,7 @@
     "db:studio": "dotenv -e .dev.vars -- drizzle-kit studio",
     "db:check": "dotenv -e .dev.vars -- tsx scripts/test-db-connection.ts",
     "seed": "dotenv -e .dev.vars -- tsx scripts/seed.ts",
+    "agent:replay": "dotenv -e .dev.vars -- tsx scripts/agent-replay.ts",
     "deploy": "pnpm build:ui && wrangler deploy",
     "deploy:staging": "pnpm build:ui && wrangler deploy -c wrangler.staging.toml",
     "provision": "tsx scripts/provision.ts",
