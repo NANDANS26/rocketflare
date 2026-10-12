@@ -6,6 +6,11 @@ copy of the kit forward without recreating anything its owner deleted.
 
 If you are running a copy: `pnpm kit:upgrade` tells you which of these you are missing.
 
+## 0.19.0 — 2026-10-12
+
+Agents can ask typed questions through `ctx.decide` (D37) — answered with probabilities by TypeSafe's Jev, a new `decisions` AI provider scope, or by the chat model — recorded per run, scored by evals and shown on the run page.
+[Porting note](docs/upgrades/0.19.0.md).
+
 ## 0.18.1 — 2026-10-11
 
 `scripts/kit-check.mjs` accepts a copy Launch has provisioned, and no config test judges the checkout it runs in, so a copy whose tomls carry Launch's real KV ids passes its own Gate.
