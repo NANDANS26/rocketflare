@@ -1,79 +1,31 @@
 ---
 version: unreleased
-previous: 0.19.0
+previous: 0.20.0
 date: null
-breaking: true
+breaking: false
 migrations: []
-areas: [api, shared, ui, docs]
+areas: []
 touches_surfaces: []
 requires_surfaces: []
-manual: true
+manual: false
 ---
 
 ## What changed
 
-The AI adapters now follow each model's own rules, so Claude 5.x and GPT-6 models work. The `openai` provider moves to the Responses API, the defaults become `claude-haiku-5-5` and `gpt-6-luna`, and stale prices are corrected.
-
-- New `@rocketflare/shared/ai/models`: `modelTraits(provider, model)` gives the thinking mode, what "off" sends, and whether the model takes a `temperature` or a forced `tool_choice`. The adapters, `POST /api/ai/config` and the settings form all read it.
-- Anthropic thinking per model:
-  - Claude 4.5 and earlier keep `enabled` + budget.
-  - 4.6+ send `adaptive`, and a stored budget is ignored.
-  - "Off" sends `disabled`, `between_tools` (Sonnet 5.5), or no field on Opus 5.5 and Fable, which always think.
-  - Before this, a 5.5 model answered every call with a 400.
-- Anthropic: a `temperature` is dropped where the model refuses one (4.7+, or any model while it thinks). A forced tool on Opus/Sonnet 5.5 or Fable 5.1 becomes a prompt instruction plus `tool_choice: auto`. `max_tokens` is floored at `ADAPTIVE_THINKING_MIN_MAX_TOKENS` (4096) while a model thinks.
-- First-party `openai` now calls `/v1/responses` with `store: false`, because Chat Completions cannot call tools on GPT-6 Astra or 6.1 Sol, or on Luna while it reasons. `openai_compatible` stays on Chat Completions.
-- `openai` configs now have a thinking switch. Off sends the lowest `reasoning.effort` the model takes (`none`, or `low` on Astra / 6.1 Sol / GPT-5.0–5.5 / o-series). On sends the model's default.
-- Reasoning blocks:
-  - Reasoning (Claude thinking blocks, OpenAI reasoning items) rides a tool loop as an opaque `ContentBlock` of `type: 'reasoning'` and is sent back unmodified to the provider that produced it.
-  - Checkpoints keep it. Chat history never stores it.
-- Each adapter recovers once from a refusal the traits misjudged, then remembers it:
-  - a refused thinking value, sampling value, forced tool or effort;
-  - a replayed reasoning block whose signature is refused, which is stripped for that one call.
-- Defaults and suggested models:
-  - `DEFAULT_MODELS.anthropic` is `claude-haiku-5-5`, which also means the platform `ANTHROPIC_API_KEY` tier now answers with it.
-  - The `openai` chat default is `gpt-6-luna`.
-  - Suggestions are Haiku/Sonnet/Opus 5.5 and Fable 5.1, and Luna / 5.6 Luna / 6.1 Sol / Astra.
-  - `claude-opus-4-1` (retired on the Claude API) is gone from the list.
-- Pricing (`PRICES_UPDATED` 2026-10-13):
-  - Opus 4.5–4.8 dropped from $15/$75 to $5/$25. They had been priced 3× too high.
-  - Every Claude 5.x model, GPT-6, GPT-5.x and their `-pro` variants now have their own entries.
-  - Haiku 5.5 uses its ≤ 100k-token rate.
-- Why: `docs/CONCEPTS.md` §9, "The request body is per MODEL".
+_Nothing yet. Add an entry here in the same pull request as the change. This first paragraph is
+lifted VERBATIM into `CHANGELOG.md`, so make it ONE standalone summary sentence of ≤ 40 words —
+then one bullet per change, one line each, and no `###` sub-headings. Rationale belongs in
+`docs/CONCEPTS.md` and is linked, never restated; see `README.md` beside this file._
 
 ## How to apply
 
-1. Port `packages/shared/src/ai/models.ts` and export it from `packages/shared/src/ai/index.ts`. Port the `ADAPTIVE_THINKING_MIN_MAX_TOKENS` constant and the `DEFAULT_MODELS` / `DEFAULT_CHAT_MODELS` changes in `packages/shared/src/ai/config.ts`.
-2. Port `apps/web/src/api/services/ai/client.ts` whole if it is unmodified in the copy. Otherwise port these parts:
-   - `anthropicThinking`, `anthropicDefaults` and `anthropicBody` (with `AnthropicQuirks`);
-   - the recovery loop in `createAnthropicChatClient`;
-   - `forcedToolText`;
-   - the `// ---- OpenAI Responses` section;
-   - the `case 'openai'` branch of `createChatClient`, which now builds `createOpenAiResponsesClient`.
-3. Add `ReasoningBlock` to the `ContentBlock` union in `apps/web/src/api/services/ai/types.ts`, and the `reasoning` variant to `contentBlockSchema` and `parseToolLoopCheckpoint` in `apps/web/src/api/services/ai/kit.ts`. In the copy, any code that switches over every `ContentBlock` type must skip or forward a `reasoning` block. It must never render one or persist it to chat history.
-4. Replace the two thinking checks in `validateUpsert` (`apps/web/src/api/routes/ai-config.ts`) with the `modelTraits` versions. A budget is now required only for a model whose traits say `extended`.
-5. Port the thinking block of `apps/web/src/ui/pages/settings/AiConfigModal.tsx` (`offersThinking`, `takesBudget`, and the help text for a model that always thinks).
-6. Port `MODEL_PRICES` and `PRICES_UPDATED` in `packages/shared/src/ai/pricing.ts`. If the copy added prices of its own, keep them, and check each prefix against the new entries. The longest prefix wins.
-7. Port the `suggestedModels` and `supportsThinking: true` changes for `openai` in `apps/web/src/api/services/ai/providers.ts`.
-8. If the copy wants the platform `ANTHROPIC_API_KEY` tier to keep answering with a bigger model, set `DEFAULT_MODELS.anthropic` back to that model id (for example `claude-sonnet-5-5`) in the copy's `config.ts`. Seeded usage (`apps/web/scripts/seed.ts`) follows `DEFAULT_MODELS.anthropic`.
-9. Any `openai` config row whose base URL points at an endpoint without `/v1/responses` (a proxy or gateway) must be changed to `openai_compatible` in Settings → AI before deploying. `openai` now speaks the Responses API only.
-10. Port the tests:
-    - `apps/web/tests/config/model-traits.test.ts` (new);
-    - the "per-model rules", "OpenAI Responses client" and "provider catalog" blocks of `apps/web/tests/api/ai-client.test.ts`;
-    - the new pricing case in `apps/web/tests/config/pricing.test.ts`;
-    - the `reasoning` checkpoint case in `apps/web/tests/api/ai-kit.test.ts`;
-    - the thinking cases in `apps/web/tests/api/ai-config.test.ts`.
+_Numbered, imperative, each step self-contained — no "these", "them" or "the above" reaching
+outside its own step._
 
 ## Conflicts to expect
 
-- `apps/web/src/api/services/ai/client.ts`: the Anthropic body builder and retry were rewritten. Re-apply any local change to the new `anthropicBody` / `recover` functions.
-- `packages/shared/src/ai/pricing.ts`: the `anthropic` and `openai` tables were replaced. Merge a copy's own entries back in.
-- `apps/web/tests/api/ai-client.test.ts`: the `openai` Chat Completions round-trip test now uses `openai_compatible`. Keep the new version.
-- `apps/web/tests/api/{ai-config,agent-models}.test.ts`: the expected platform model is now `DEFAULT_MODELS.anthropic` instead of a literal. Keep the new version.
+_One line each: `path → what changed → what to do`. Or exactly `None.`_
 
 ## Verify
 
-1. `pnpm gate` passes.
-2. `pnpm web exec vitest run --project config model-traits pricing` passes.
-3. With `ANTHROPIC_API_KEY` set, `curl -b <cookie> localhost:3001/api/ai/config/readiness` reports `"model":"claude-haiku-5-5"` for chat. A chat message gets a streamed reply.
-4. In Settings → AI, add an `anthropic` config with model `claude-opus-5-5`. The thinking help text says the model always reasons, and *Test connection* answers `ok: true`.
-5. In Settings → AI, add an `openai` config (default model `gpt-6-luna`). *Test connection* answers `ok: true`, and a chat turn that calls `search_knowledge` completes.
+_Numbered checkable commands and assertions only._

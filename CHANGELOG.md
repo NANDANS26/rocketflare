@@ -6,6 +6,11 @@ copy of the kit forward without recreating anything its owner deleted.
 
 If you are running a copy: `pnpm kit:upgrade` tells you which of these you are missing.
 
+## 0.20.0 — 2026-10-13
+
+The AI adapters now follow each model's own rules, so Claude 5.x and GPT-6 models work. The `openai` provider moves to the Responses API, the defaults become `claude-haiku-5-5` and `gpt-6-luna`, and stale prices are corrected.
+[Porting note](docs/upgrades/0.20.0.md).
+
 ## 0.19.0 — 2026-10-12
 
 Agents can ask typed questions through `ctx.decide` (D37) — answered with probabilities by TypeSafe's Jev, a new `decisions` AI provider scope, or by the chat model — recorded per run, scored by evals and shown on the run page.
