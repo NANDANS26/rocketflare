@@ -394,12 +394,17 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   **every step name carries its round**, because a repeated name replays the recorded result.
   A retry resumes: `ctx.checkpoint` keeps the tool-loop transcript and `ctx.once(key, fn)` gives
   once-per-run effects (a DB unique index; at-least-once with a recorded result).
-- **Human-in-the-loop (#17)**: `ctx.interrupt({ key, spec })` parks the run on
+- **Human-in-the-loop (#17) and Approvals (#3)**: `ctx.interrupt({ key, spec })` parks the run on
   `step.waitForEvent`. The key must be stable across attempts. Answering is a compare-and-set on the
   row, *then* a nudge to the instance (`not_found` → restart as `<runId>-rN`). There are four
   closed interrupt kinds (approval/choice/input/form). Model-called tools are gated on the tool
   (`requiresApproval`) before any handler runs. Artifacts are an upserted table, and steering notes
   are event rows delivered once.
+  **Human Approvals and Tool Authorization (#3)**: `ctx.approve(key, payload)` pauses the run in
+  `awaiting_approval` status until decided by an authorized user via `POST /api/agents/runs/:id/approvals/:key`.
+  Approvals are durably persisted in `agent_run_approvals` with tenant isolation and uniqueness on `(run_id, key)`.
+  Approved runs resume via a fresh Workflow instance; rejected runs cancel. Run-level tool authorization
+  (`authorizeTool`) intercepts tool execution prior to handler invocation, returning error results to the model if denied.
 - **Decisions (D37)**: `ctx.decide(key, { state, questions })` asks typed questions — `noul`
   (yes/no), `choice`, `score`, in TypeSafe's own vocabulary — and gets back an answer, a
   distribution and a `confidence` per question; `ctx.decide.sift` asks the same yes/no of every item

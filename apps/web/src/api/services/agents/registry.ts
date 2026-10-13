@@ -73,6 +73,12 @@ export interface AgentInterruptAnswer {
   resolvedByUserId: string | null
 }
 
+export interface AgentApprovalDecision {
+  approved: boolean
+  note?: string | null
+  decidedByUserId?: string | null
+}
+
 /** What `run()` receives. Never carries a client-supplied tenant id. */
 export interface AgentContext<Input = unknown> {
   db: Database
@@ -136,6 +142,14 @@ export interface AgentContext<Input = unknown> {
    * run — so it does not return on that attempt at all.
    */
   interrupt(ask: AgentInterruptAsk): Promise<AgentInterruptAnswer>
+  /**
+   * Request human approval for a specific action or milestone (Issue #3).
+   * Persists an approval record under `(runId, key)` and pauses execution with
+   * status 'awaiting_approval' if pending.
+   * If approved, returns `{ approved: true, note, decidedByUserId }`.
+   * If rejected, throws `AgentApprovalRejectedError`.
+   */
+  approve(key: string, payload: unknown): Promise<AgentApprovalDecision>
   /**
    * Notes a person has sent to this run and that this run has not seen yet — delivered **exactly
    * once** across every attempt (`agent_run_effects`, keyed by the note's event id), so a step

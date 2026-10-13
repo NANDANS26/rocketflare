@@ -462,6 +462,19 @@ export interface RunToolLoopOptions {
    */
   runApproved?: <T>(key: string, fn: () => Promise<T>) => Promise<T>
   /**
+   * Run-level tool authorization hook (Issue #3).
+   * Called before any tool handler executes. If returning false or { allow: false },
+   * execution is denied without invoking the tool handler and an isError result is returned to the model.
+   */
+  authorizeTool?: (
+    name: string,
+    input: unknown,
+    context: { turn: number; toolUseId: string }
+  ) =>
+    | boolean
+    | { allow: boolean; reason?: string }
+    | Promise<boolean | { allow: boolean; reason?: string }>
+  /**
    * Awaited at the top of every turn, BEFORE the model is called. Anything it returns is folded
    * into the transcript — this is where a steering note lands. A `user` message with string content
    * goes through {@link appendUserText}, so a note after a turn of tool results never becomes a
@@ -642,7 +655,26 @@ export async function runToolLoop(
       const tool = byName.get(block.name)
       const approval = opts.approvals?.get(block.id)
       let outcome: { text: string; isError: boolean }
-      if (approval?.status === 'cancelled') {
+      // Run-level tool authorization check (Issue #3)
+      let authDecision: boolean | { allow: boolean; reason?: string } = true
+      if (opts.authorizeTool) {
+        authDecision = await opts.authorizeTool(block.name, block.input, {
+          turn,
+          toolUseId: block.id,
+        })
+      }
+      const isAllowed = typeof authDecision === 'boolean' ? authDecision : authDecision.allow
+      const denialReason =
+        typeof authDecision === 'object' && !authDecision.allow ? authDecision.reason : undefined
+
+      if (!isAllowed) {
+        outcome = {
+          text: denialReason
+            ? `Tool execution denied by authorization policy: ${denialReason}`
+            : `Tool execution denied: '${block.name}' is not authorized for this run.`,
+          isError: true,
+        }
+      } else if (approval?.status === 'cancelled') {
         if (approval.onReject === 'cancel_run') {
           throw new InterruptDeclinedError(approval.interruptId, approval.note)
         }

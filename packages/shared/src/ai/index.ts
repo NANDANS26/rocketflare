@@ -2,6 +2,7 @@
 export * from './agent-models'
 export * from './agents'
 export * from './agui'
+export * from './approvals'
 export * from './artifacts'
 export * from './chat'
 export * from './config'

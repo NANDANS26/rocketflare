@@ -60,20 +60,28 @@ describe('the Workflow resume event (T8)', () => {
 })
 
 describe('run statuses', () => {
-  it('appends `awaiting_input` last, because the enum mirrors a text column', () => {
-    expect(agentRunStatusSchema.options.at(-1)).toBe('awaiting_input')
+  it('includes `awaiting_input` and `awaiting_approval`', () => {
+    expect(agentRunStatusSchema.options).toContain('awaiting_input')
+    expect(agentRunStatusSchema.options).toContain('awaiting_approval')
   })
 
-  it('treats a parked run as active — it still holds the exclusive slot', () => {
+  it('treats parked runs as active — they still hold the exclusive slot', () => {
     expect(isRunActive('awaiting_input')).toBe(true)
-    expect([...ACTIVE_RUN_STATUSES]).toEqual(['queued', 'running', 'awaiting_input'])
+    expect(isRunActive('awaiting_approval')).toBe(true)
+    expect([...ACTIVE_RUN_STATUSES]).toEqual([
+      'queued',
+      'running',
+      'awaiting_input',
+      'awaiting_approval',
+    ])
   })
 
   it('keeps the claimable list narrower: the answer is the transition (T4)', () => {
-    // The resolve route flips `awaiting_input → running` BEFORE nudging, so a claim never has to
+    // The resolve route flips parked states to running BEFORE nudging, so a claim never has to
     // see a parked row. Widening this is how a restarted instance claims an unanswered run.
     expect([...CLAIMABLE_RUN_STATUSES]).toEqual(['queued', 'running'])
     expect(CLAIMABLE_RUN_STATUSES as readonly string[]).not.toContain('awaiting_input')
+    expect(CLAIMABLE_RUN_STATUSES as readonly string[]).not.toContain('awaiting_approval')
   })
 })
 

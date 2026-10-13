@@ -35,6 +35,7 @@ export const AGENT_RUN_STATUS_VALUES = [
   'failed',
   'cancelled',
   'awaiting_input',
+  'awaiting_approval',
 ] as const satisfies readonly AgentRunStatus[]
 
 /**

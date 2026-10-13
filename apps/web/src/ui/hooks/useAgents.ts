@@ -18,6 +18,11 @@ import {
   createAgentRunResponseSchema,
 } from '@rocketflare/shared/ai/agents'
 import {
+  type AgentRunApproval,
+  agentRunApprovalSchema,
+  type DecideApprovalRequest,
+} from '@rocketflare/shared/ai/approvals'
+import {
   type AgentRunInterrupt,
   agentRunInterruptSchema,
   interruptInboxItemSchema,
@@ -213,6 +218,30 @@ export function useResolveInterrupt(runId: string) {
     onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.agentRuns.all }),
     onError: error => {
       if (!isInterruptNotPending(error) && error instanceof ApiError && error.status !== 400) {
+        showToast(error.message, 'error')
+      }
+    },
+  })
+}
+
+/**
+ * Decide a human approval ('approve' | 'reject') for a paused agent run (Issue #3).
+ */
+export function useDecideApproval(runId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      key,
+      ...body
+    }: DecideApprovalRequest & { key: string }): Promise<AgentRunApproval> =>
+      api.post(
+        `/api/agents/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(key)}`,
+        body,
+        { schema: agentRunApprovalSchema }
+      ),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.agentRuns.all }),
+    onError: error => {
+      if (error instanceof ApiError && error.status !== 400 && error.status !== 409) {
         showToast(error.message, 'error')
       }
     },

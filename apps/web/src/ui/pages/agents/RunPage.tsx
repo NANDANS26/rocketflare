@@ -40,6 +40,7 @@ import { streamEnabled, useRunStream } from '@/ui/hooks/useRunStream'
 import { outputFor } from './outputs'
 import { RunStatusBadge } from './RunStatusBadge'
 import { ActionRequiredPanel } from './run/ActionRequiredPanel'
+import { ApprovalRequiredPanel } from './run/ApprovalRequiredPanel'
 import { RunArtifactsTab } from './run/output/RunArtifactsTab'
 import { RunOutputTab } from './run/output/RunOutputTab'
 import { RunUsageTab } from './run/output/RunUsageTab'
@@ -143,6 +144,10 @@ function RunWorkspace({ run, agent }: { run: AgentRunWithEvents; agent?: AgentIn
 
   const rows = useMemo(() => buildTimeline(run.events), [run.events])
   const pending = useMemo(() => selectPendingInterrupts(run.interrupts), [run.interrupts])
+  const pendingApproval = useMemo(
+    () => (run.approvals ?? []).find(a => a.status === 'pending'),
+    [run.approvals]
+  )
   const stats = useMemo(() => selectWorkStats(rows), [rows])
   const artifacts = useMemo(() => {
     const stored = selectArtifacts(rows, run.artifacts)
@@ -199,6 +204,17 @@ function RunWorkspace({ run, agent }: { run: AgentRunWithEvents; agent?: AgentIn
           <ActionRequiredPanel
             runId={run.id}
             interrupt={pending[0]}
+            canAnswer={canAnswer}
+            approverLabel="an administrator"
+          />
+        </div>
+      )}
+
+      {pendingApproval && (
+        <div className="sticky top-0 z-20 pb-1 bg-[color:var(--surface-page,transparent)]">
+          <ApprovalRequiredPanel
+            runId={run.id}
+            approval={pendingApproval}
             canAnswer={canAnswer}
             approverLabel="an administrator"
           />

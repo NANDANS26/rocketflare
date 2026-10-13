@@ -8,6 +8,7 @@
 import { z } from 'zod'
 import { paginationQuerySchema } from '../pagination'
 import { type DeclaredBy, type SHARED_PLUGINS, sharedPlugins } from '../plugins'
+import { agentApprovalEventDataSchema, agentRunApprovalSchema } from './approvals'
 import { agentArtifactEventDataSchema, agentArtifactSchema } from './artifacts'
 import { agentDecisionEventDataSchema, agentRunDecisionSchema } from './decisions'
 import {
@@ -106,6 +107,7 @@ export const agentRunStatusSchema = z.enum([
   'failed',
   'cancelled',
   'awaiting_input',
+  'awaiting_approval',
 ])
 export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>
 
@@ -115,7 +117,12 @@ export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>
  * *the* active run for `(tenant, agentKey)`: leave it out and a second enqueue slips past the
  * exclusive guarantee while the first waits on a human.
  */
-export const ACTIVE_RUN_STATUSES = ['queued', 'running', 'awaiting_input'] as const
+export const ACTIVE_RUN_STATUSES = [
+  'queued',
+  'running',
+  'awaiting_input',
+  'awaiting_approval',
+] as const
 
 /**
  * Statuses the `claim` step may take over — **narrower than {@link ACTIVE_RUN_STATUSES} on
@@ -183,6 +190,8 @@ export const AGENT_RUN_EVENT_TYPES = [
   'steering',
   'artifact',
   'decision',
+  'approval',
+  'approval.decided',
 ] as const
 export const agentRunEventTypeSchema = z.enum(AGENT_RUN_EVENT_TYPES)
 export type AgentRunEventType = z.infer<typeof agentRunEventTypeSchema>
@@ -275,6 +284,8 @@ export const AGENT_RUN_EVENT_DATA = {
   steering: steeringNoteDataSchema,
   artifact: agentArtifactEventDataSchema,
   decision: agentDecisionEventDataSchema,
+  approval: agentApprovalEventDataSchema,
+  'approval.decided': agentApprovalEventDataSchema,
 } as const satisfies Record<AgentRunEventType, z.ZodTypeAny>
 
 export const agentRunEventSchema = z.object({
@@ -296,6 +307,8 @@ export const agentRunWithEventsSchema = agentRunSchema.extend({
   artifacts: z.array(agentArtifactSchema).default([]),
   /** Every typed question the run asked (D37) — answers, probabilities, the engine that gave them. */
   decisions: z.array(agentRunDecisionSchema).default([]),
+  /** Durable human approvals for this run (Issue #3). */
+  approvals: z.array(agentRunApprovalSchema).default([]),
 })
 export type AgentRunWithEvents = z.infer<typeof agentRunWithEventsSchema>
 

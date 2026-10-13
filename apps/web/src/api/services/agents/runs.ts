@@ -88,6 +88,38 @@ export class AgentCancelledError extends Error {
   }
 }
 
+/**
+ * Thrown when an approval is requested and awaiting human decision (Issue #3).
+ * Signals executeRun to park the run with status 'awaiting_approval'.
+ */
+export class AgentPausedError extends Error {
+  readonly key: string
+  readonly payload?: unknown
+  constructor(key: string, payload?: unknown) {
+    super(`Agent run paused awaiting approval: ${key}`)
+    this.name = 'AgentPausedError'
+    this.key = key
+    this.payload = payload
+  }
+}
+
+/**
+ * Thrown when an approval was rejected by a human decider (Issue #3).
+ * Signals executeRun to cancel the run with reason 'rejected'.
+ */
+export class AgentApprovalRejectedError extends Error {
+  readonly key: string
+  readonly note?: string | null
+  constructor(key: string, note?: string | null) {
+    super(
+      note ? `Agent approval rejected for ${key}: ${note}` : `Agent approval rejected for ${key}`
+    )
+    this.name = 'AgentApprovalRejectedError'
+    this.key = key
+    this.note = note
+  }
+}
+
 export function toAgentRun(row: AgentRunRow): AgentRun {
   return {
     id: row.id,
@@ -308,11 +340,12 @@ export function cancelRun(db: Database, tenantId: string, runId: string) {
 export async function parkRun(
   db: Database,
   tenantId: string,
-  runId: string
+  runId: string,
+  status: 'awaiting_input' | 'awaiting_approval' = 'awaiting_input'
 ): Promise<AgentRunRow | null> {
   const [row] = await db
     .update(agentRuns)
-    .set({ status: 'awaiting_input' })
+    .set({ status })
     .where(
       and(
         eq(agentRuns.id, runId),
@@ -325,12 +358,8 @@ export async function parkRun(
 }
 
 /**
- * Un-park a run: `awaiting_input → running`, compare-and-set. **The answer IS the transition**
- * (decision 2): the resolve route calls this BEFORE it nudges or restarts the instance, which is
- * what lets `claimRun` keep its narrow `queued|running` predicate — a restarted instance's `claim`
- * step finds a `running` row because somebody answered, and finds nothing when nobody did.
- *
- * Null means the row was not parked: 409 `run_not_awaiting_input`.
+ * Un-park a run: `awaiting_input | awaiting_approval → running`, compare-and-set.
+ * The answer IS the transition.
  */
 export async function resumeRun(
   db: Database,
@@ -344,7 +373,7 @@ export async function resumeRun(
       and(
         eq(agentRuns.id, runId),
         eq(agentRuns.tenantId, tenantId),
-        eq(agentRuns.status, 'awaiting_input')
+        inArray(agentRuns.status, ['awaiting_input', 'awaiting_approval'])
       )
     )
     .returning()
@@ -378,10 +407,13 @@ export async function requestCancel(
 ): Promise<AgentRunRow | null> {
   const row = await getRun(db, tenantId, runId)
   if (!row) return null
-  // `queued` and `awaiting_input` are the two states where nothing is executing, so both settle
-  // outright rather than waiting for a poll that will never come: a parked instance is asleep on
-  // `step.waitForEvent` and polls nothing at all.
-  if (row.status === 'queued' || row.status === 'awaiting_input') {
+  // `queued`, `awaiting_input`, and `awaiting_approval` are the states where nothing is executing,
+  // so all settle outright rather than waiting for a poll that will never come.
+  if (
+    row.status === 'queued' ||
+    row.status === 'awaiting_input' ||
+    row.status === 'awaiting_approval'
+  ) {
     const [updated] = await db
       .update(agentRuns)
       .set({ status: 'cancelled', cancelRequestedAt: sql`now()`, finishedAt: sql`now()` })
@@ -394,10 +426,10 @@ export async function requestCancel(
       )
       .returning()
     if (row.status === 'awaiting_input') {
-      // A question whose run is over must not sit in somebody's inbox, and the sleeping instance
-      // has to be woken or it holds its seven-day `waitForEvent` for nothing — it wakes, reads a
-      // settled row and exits. Both are best-effort: the ROW is the truth.
       await expireInterrupts(db, tenantId, runId)
+      await sendResumeEvent(env, updated ?? row, { interruptId: null })
+    }
+    if (row.status === 'awaiting_approval') {
       await sendResumeEvent(env, updated ?? row, { interruptId: null })
     }
     nudgeRun(realtime, tenantId, runId)

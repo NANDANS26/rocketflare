@@ -27,6 +27,7 @@ import {
   isRunActive,
 } from '@rocketflare/shared/ai/agents'
 import type { AgentRunAguiResponse } from '@rocketflare/shared/ai/agui'
+import { decideApprovalRequestSchema } from '@rocketflare/shared/ai/approvals'
 import type { AgentApprovers, InterruptInboxItem } from '@rocketflare/shared/ai/interrupts'
 import {
   createSteeringNoteRequestSchema,
@@ -41,6 +42,12 @@ import { type AgentRunRow, agentRunInterrupts, agentRuns } from '../../db/schema
 import { guardPermission, isAdminLevel } from '../middleware/permissions'
 import { recordActivity } from '../services/activity'
 import { projectRunToAgui } from '../services/agents/agui-projection'
+import {
+  decideApproval,
+  getApprovalByKey,
+  listApprovals,
+  toAgentRunApproval,
+} from '../services/agents/approvals'
 import { listArtifacts, toAgentArtifact } from '../services/agents/artifacts'
 import { listDecisions } from '../services/agents/decisions'
 import {
@@ -54,6 +61,7 @@ import { AGENTS, isAgentKey, listAgentInfo } from '../services/agents/registry'
 import { streamRunAgui } from '../services/agents/run-stream'
 import {
   appendEventAtomic,
+  cancelRun,
   enqueueRun,
   expireParkedRun,
   getRun,
@@ -229,10 +237,11 @@ agentsRouter.get('/runs/:id', async c => {
   // read AFTER it, because `expireParkedRun` is exactly the thing that rewrites them.
   const events = await listEvents(db, tenantId, row.id)
   const run = await settleOnRead(c, row, { lastEventAt: events.at(-1)?.at ?? null })
-  const [interrupts, artifacts, decisions] = await Promise.all([
+  const [interrupts, artifacts, decisions, approvals] = await Promise.all([
     listInterrupts(db, tenantId, run.id),
     listArtifacts(db, tenantId, run.id),
     listDecisions(db, tenantId, run.id),
+    listApprovals(db, tenantId, run.id),
   ])
   const body: AgentRunWithEvents = {
     ...toAgentRun(run),
@@ -240,6 +249,7 @@ agentsRouter.get('/runs/:id', async c => {
     interrupts: interrupts.map(toAgentRunInterrupt),
     artifacts: artifacts.map(toAgentArtifact),
     decisions,
+    approvals: approvals.map(toAgentRunApproval),
   }
   return c.json(body)
 })
@@ -506,6 +516,116 @@ agentsRouter.post(
       realtime,
     })
     return c.json(toAgentRunEvent(row), 201)
+  }
+)
+
+// ---- POST /api/agents/runs/:id/approvals/:key -----------------------------------------------------
+
+/**
+ * Human approval decision route (Issue #3).
+ *
+ * Atomically records decision ('approve' | 'reject') for a pending approval under (runId, key).
+ * - If already decided identically, idempotent 200.
+ * - If conflicting terminal decision or not found, ConflictError (409) or NotFoundError (404).
+ * - Emits 'approval.decided' event and nudges run.
+ * - If approved, resumes the run (flipping status to 'running') and creates a fresh Workflow instance.
+ */
+agentsRouter.post(
+  '/runs/:id/approvals/:key',
+  validate('json', decideApprovalRequestSchema),
+  async c => {
+    const { db, tenantId, user, auth, defer, realtime } = withAuthAndDb(c)
+    guardPermission(c, 'update', 'AgentRun')
+    const runId = uuidParam(c, 'id')
+    const key = c.req.param('key')
+
+    const run = await getRun(db, tenantId, runId)
+    if (!run || !visible(auth, run)) throw new NotFoundError('Agent run not found')
+    if (!canAnswer(auth, run)) {
+      throw new ForbiddenError('Only an administrator may decide approvals for this agent')
+    }
+
+    const existing = await getApprovalByKey(db, tenantId, runId, key)
+    if (!existing) throw new NotFoundError('Approval not found')
+
+    const body = c.req.valid('json')
+    const expectedStatus = body.decision === 'approve' ? 'approved' : 'rejected'
+
+    if (existing.status !== 'pending') {
+      if (existing.status === expectedStatus) {
+        return c.json(toAgentRunApproval(existing), 200)
+      }
+      throw new ConflictError(
+        'That approval has already been decided with a different outcome',
+        undefined,
+        { key, status: existing.status }
+      )
+    }
+
+    const decided = await decideApproval(db, {
+      tenantId,
+      runId,
+      key,
+      decision: body.decision,
+      note: body.note,
+      userId: user.id,
+    })
+
+    if (!decided) {
+      const current = await getApprovalByKey(db, tenantId, runId, key)
+      if (current && current.status === expectedStatus) {
+        return c.json(toAgentRunApproval(current), 200)
+      }
+      throw new ConflictError('That approval has already been decided', undefined, {
+        key,
+        status: current?.status,
+      })
+    }
+
+    await appendEventAtomic(db, {
+      tenantId,
+      runId,
+      type: 'approval.decided',
+      data: {
+        approvalId: decided.id,
+        key: decided.key,
+        status: decided.status,
+        note: decided.note,
+        decidedByUserId: user.id,
+      },
+      realtime,
+    })
+
+    if (decided.status === 'approved') {
+      const resumedRow = await resumeRun(db, tenantId, runId)
+      if (resumedRow) {
+        await nudgeOrRestartInstance(db, c.env, resumedRow, { interruptId: null })
+      }
+    } else {
+      // Rejected: cancel the run
+      await cancelRun(db, tenantId, runId)
+      await appendEventAtomic(db, {
+        tenantId,
+        runId,
+        type: 'status',
+        data: { status: 'cancelled', reason: 'rejected' },
+        realtime,
+      })
+    }
+
+    defer(() =>
+      recordActivity(db, {
+        tenantId,
+        userId: user.id,
+        type: 'agent_run.approval_decided',
+        subjectType: 'AgentRun',
+        subjectId: runId,
+        metadata: { agentKey: run.agentKey, key: decided.key, status: decided.status },
+      })
+    )
+
+    nudgeRun(realtime, tenantId, runId)
+    return c.json(toAgentRunApproval(decided))
   }
 )
 

@@ -49,6 +49,7 @@ import type { AiEnv } from '../ai/types'
 import { notifyMany } from '../notifications'
 import { resolvePrompt } from '../prompts'
 import type { HubEnv, Realtime } from '../realtime'
+import { requestApproval } from './approvals'
 import { toAgentArtifact, upsertArtifact } from './artifacts'
 import { createDecide } from './decisions'
 import {
@@ -60,7 +61,9 @@ import {
 import type { AgentContext, AgentEvent, AgentRunEnv } from './registry'
 import { getAgent } from './registry'
 import {
+  AgentApprovalRejectedError,
   AgentCancelledError,
+  AgentPausedError,
   type AgentRunParams,
   appendEvent,
   cancelRun,
@@ -158,7 +161,13 @@ export function isRetryableRunError(err: unknown): boolean {
   // Neither interrupt type is a fault, and retrying either one re-asks a person who has already
   // been asked — or, worse, one who has already said no. They are handled by their own catch arms
   // above this classification; answering `true` here would let a step retry overtake them.
-  if (err instanceof InterruptRequested || err instanceof InterruptDeclinedError) return false
+  if (
+    err instanceof InterruptRequested ||
+    err instanceof InterruptDeclinedError ||
+    err instanceof AgentPausedError ||
+    err instanceof AgentApprovalRejectedError
+  )
+    return false
   return classifyInfrastructureError(err) === 'database_unavailable'
 }
 
@@ -373,6 +382,26 @@ export async function executeRun(
               resolvedByUserId: row.resolvedByUserId,
             }
           },
+          approve: async (key: string, payload: unknown) => {
+            const row = await requestApproval(db, {
+              tenantId,
+              runId,
+              key,
+              payload,
+            })
+            if (row.status === 'approved') {
+              return {
+                approved: true,
+                note: row.note,
+                decidedByUserId: row.decidedByUserId,
+              }
+            }
+            if (row.status === 'rejected') {
+              throw new AgentApprovalRejectedError(row.key, row.note)
+            }
+            // status === 'pending'
+            throw new AgentPausedError(row.key, row.payload)
+          },
           steering: () => takeSteeringNotes(db, tenantId, runId),
           decide: createDecide({
             db,
@@ -483,6 +512,32 @@ export async function executeRun(
       await cancelRun(db, tenantId, runId)
       await expireInterrupts(db, tenantId, runId)
       await emit({ type: 'status', data: { status: 'cancelled', reason: 'rejected' } })
+      return { runId, status: 'cancelled' }
+    }
+    // Pause for human approval (Issue #3)
+    if (err instanceof AgentPausedError) {
+      const parked = await parkRun(db, tenantId, runId, 'awaiting_approval')
+      if (!parked) {
+        const current = await getRun(db, tenantId, runId)
+        return { runId, status: current?.status ?? 'cancelled' }
+      }
+      await emit({
+        type: 'approval',
+        data: {
+          key: err.key,
+          payload: err.payload,
+          status: 'pending',
+        },
+      })
+      await emit({ type: 'status', data: { status: 'awaiting_approval' } })
+      return { runId, status: 'awaiting_approval' }
+    }
+    if (err instanceof AgentApprovalRejectedError) {
+      await cancelRun(db, tenantId, runId)
+      await emit({
+        type: 'status',
+        data: { status: 'cancelled', reason: 'rejected' },
+      })
       return { runId, status: 'cancelled' }
     }
     const message = describeRunError(err)

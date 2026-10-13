@@ -24,6 +24,7 @@ export const STATUS_LABELS: Record<AgentRunStatus, string> = {
   failed: 'Failed',
   cancelled: 'Cancelled',
   awaiting_input: 'Awaiting input',
+  awaiting_approval: 'Awaiting approval',
 }
 
 /** `succeeded` shares the success tone `completed` already has in the stylesheet. */
@@ -35,11 +36,12 @@ const TONE: Record<AgentRunStatus, string> = {
   cancelled: 'cancelled',
   // The stylesheet's existing warning tone: parked is neither progress nor failure.
   awaiting_input: 'awaiting-review',
+  awaiting_approval: 'awaiting-review',
 }
 
 export function RunStatusBadge({ status }: { status: AgentRunStatus }) {
   const live = runOwesAnswer(status)
-  const parked = status === 'awaiting_input'
+  const parked = status === 'awaiting_input' || status === 'awaiting_approval'
   return (
     <span
       className={`status-badge ${live ? 'animate-pulse' : ''} ${parked ? 'gap-1' : ''}`}
