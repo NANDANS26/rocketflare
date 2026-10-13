@@ -454,7 +454,10 @@ export async function requestCancel(
 }
 
 /** Best-effort kill of the run's Workflow instance. Every failure is ignored on purpose. */
-async function terminateInstance(env: AgentRunsEnv | undefined, run: AgentRunRow): Promise<void> {
+export async function terminateInstance(
+  env: AgentRunsEnv | undefined,
+  run: AgentRunRow
+): Promise<void> {
   if (!env?.AGENT_RUN_WORKFLOW || !run.instanceId) return
   try {
     await (await env.AGENT_RUN_WORKFLOW.get(run.instanceId)).terminate()
@@ -466,7 +469,7 @@ async function terminateInstance(env: AgentRunsEnv | undefined, run: AgentRunRow
 // ---- Suspend / resume (issue #17) -----------------------------------------------------------
 
 /** Best-effort wake of a parked instance. Returns false when it could not be delivered. */
-async function sendResumeEvent(
+export async function sendResumeEvent(
   env: AgentRunsEnv | undefined,
   run: AgentRunRow,
   payload: { interruptId: string | null }

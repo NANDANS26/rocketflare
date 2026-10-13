@@ -72,6 +72,7 @@ import {
   reconcileRun,
   requestCancel,
   resumeRun,
+  terminateInstance,
   toAgentRun,
   toAgentRunEvent,
 } from '../services/agents/runs'
@@ -602,7 +603,8 @@ agentsRouter.post(
         await nudgeOrRestartInstance(db, c.env, resumedRow, { interruptId: null })
       }
     } else {
-      // Rejected: cancel the run
+      // Rejected: cancel the run and terminate the parked workflow instance
+      await terminateInstance(c.env, run)
       await cancelRun(db, tenantId, runId)
       await appendEventAtomic(db, {
         tenantId,

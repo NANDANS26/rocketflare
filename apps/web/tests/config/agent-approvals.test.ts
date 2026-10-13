@@ -16,7 +16,12 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { AgentApprovalRejectedError, AgentPausedError } from '@/api/services/agents/runs'
-import { runToolLoop, type Tool } from '@/api/services/ai/kit'
+import {
+  callStructuredTool,
+  runToolLoop,
+  type Tool,
+  ToolAuthorizationError,
+} from '@/api/services/ai/kit'
 import { FakeChatClient } from '../helpers/ai'
 
 describe('Agent Approval Schemas & Statuses (Issue #3)', () => {
@@ -225,5 +230,101 @@ describe('Agent Errors for Human Approvals (Issue #3)', () => {
     expect(err.key).toBe('approval_123')
     expect(err.note).toBe('Budget exceeded')
     expect(err.message).toContain('Budget exceeded')
+  })
+})
+
+describe('Direct Structured Tool Authorization (Issue #3)', () => {
+  const structuredTool = {
+    name: 'export_data',
+    description: 'exports customer data',
+    schema: z.object({ target: z.string(), rows: z.number() }),
+  }
+
+  it('allows structured tool output when authorizeTool allows', async () => {
+    const client = new FakeChatClient([
+      {
+        toolUses: [
+          { id: 'call_export_1', name: 'export_data', input: { target: 'csv', rows: 10 } },
+        ],
+      },
+    ])
+    const authorizeTool = vi.fn().mockResolvedValue(true)
+
+    const result = await callStructuredTool(client, {
+      model: 'test-model',
+      system: 'system prompt',
+      messages: [{ role: 'user', content: 'export 10 rows' }],
+      tool: structuredTool,
+      authorizeTool,
+    })
+
+    expect(result).toEqual({ target: 'csv', rows: 10 })
+    expect(authorizeTool).toHaveBeenCalledWith(
+      'export_data',
+      { target: 'csv', rows: 10 },
+      { turn: 1, toolUseId: 'call_export_1' }
+    )
+  })
+
+  it('throws ToolAuthorizationError and blocks output when authorizeTool denies', async () => {
+    const client = new FakeChatClient([
+      {
+        toolUses: [
+          { id: 'call_export_2', name: 'export_data', input: { target: 's3', rows: 1000 } },
+        ],
+      },
+    ])
+    const authorizeTool = vi.fn().mockResolvedValue({
+      allow: false,
+      reason: 'Export to external storage is restricted',
+    })
+
+    await expect(
+      callStructuredTool(client, {
+        model: 'test-model',
+        system: 'system prompt',
+        messages: [{ role: 'user', content: 'export to s3' }],
+        tool: structuredTool,
+        authorizeTool,
+      })
+    ).rejects.toThrow(ToolAuthorizationError)
+
+    await expect(
+      callStructuredTool(
+        new FakeChatClient([
+          {
+            toolUses: [
+              { id: 'call_export_3', name: 'export_data', input: { target: 's3', rows: 1000 } },
+            ],
+          },
+        ]),
+        {
+          model: 'test-model',
+          system: 'system prompt',
+          messages: [{ role: 'user', content: 'export to s3' }],
+          tool: structuredTool,
+          authorizeTool: () => false,
+        }
+      )
+    ).rejects.toThrow(/Tool execution denied: 'export_data' is not authorized for this run/)
+  })
+
+  it('remains backward compatible when authorizeTool is omitted', async () => {
+    const client = new FakeChatClient([
+      {
+        toolUses: [
+          { id: 'call_export_4', name: 'export_data', input: { target: 'json', rows: 5 } },
+        ],
+      },
+    ])
+
+    const result = await callStructuredTool(client, {
+      model: 'test-model',
+      system: 'system prompt',
+      messages: [{ role: 'user', content: 'export json' }],
+      tool: structuredTool,
+    })
+
+    expect(result).toEqual({ target: 'json', rows: 5 })
   })
 })

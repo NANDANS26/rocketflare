@@ -241,6 +241,20 @@ export class StructuredOutputError extends Error {
   }
 }
 
+export class ToolAuthorizationError extends Error {
+  constructor(
+    public readonly toolName: string,
+    public readonly reason?: string
+  ) {
+    super(
+      reason
+        ? `Tool execution denied by authorization policy: ${reason}`
+        : `Tool execution denied: '${toolName}' is not authorized for this run.`
+    )
+    this.name = 'ToolAuthorizationError'
+  }
+}
+
 export interface CallStructuredToolOptions<T> {
   model: string
   system: SystemPrompt
@@ -252,6 +266,15 @@ export interface CallStructuredToolOptions<T> {
   cache?: boolean
   /** Usage tap (the sum of both attempts when a retry happens). */
   onUsage?: (usage: TokenUsage) => void
+  /** Run-level tool authorization hook (Issue #3). */
+  authorizeTool?: (
+    name: string,
+    input: unknown,
+    context: { turn: number; toolUseId: string }
+  ) =>
+    | boolean
+    | { allow: boolean; reason?: string }
+    | Promise<boolean | { allow: boolean; reason?: string }>
 }
 
 /**
@@ -286,6 +309,19 @@ export async function callStructuredTool<T>(
     const call = toolUsesOf(result.content).find(b => b.name === tool.name)
     const parsed = call ? opts.tool.schema.safeParse(call.input) : undefined
     if (parsed?.success) {
+      if (opts.authorizeTool && call) {
+        const authDecision = await opts.authorizeTool(tool.name, parsed.data, {
+          turn: attempt + 1,
+          toolUseId: call.id,
+        })
+        const isAllowed = typeof authDecision === 'boolean' ? authDecision : authDecision.allow
+        const denialReason =
+          typeof authDecision === 'object' && !authDecision.allow ? authDecision.reason : undefined
+        if (!isAllowed) {
+          opts.onUsage?.(usage)
+          throw new ToolAuthorizationError(tool.name, denialReason)
+        }
+      }
       opts.onUsage?.(usage)
       return parsed.data
     }

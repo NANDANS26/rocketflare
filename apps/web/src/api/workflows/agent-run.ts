@@ -107,7 +107,7 @@ export class AgentRunWorkflow extends WorkflowEntrypoint<AppBindings, AgentRunPa
         break
       }
 
-      if (outcome.status !== 'awaiting_input') break
+      if (outcome.status !== 'awaiting_input' && outcome.status !== 'awaiting_approval') break
 
       if (round >= this.maxInterruptRounds) {
         // A correctness guard, not a capacity one: an agent that asks the same question every

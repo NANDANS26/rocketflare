@@ -600,7 +600,8 @@ export async function finishStep(
   // The one case where a parked row is a FAILURE rather than an expiry: the loop gave up on an
   // agent that kept asking (`MAX_INTERRUPT_ROUNDS`) and said so in the outcome. It is the outcome
   // that decides, never the row's status — widening the predicate below is T7.
-  const abandoned = row?.status === 'awaiting_input' && outcome?.status === 'failed'
+  const isParked = row?.status === 'awaiting_input' || row?.status === 'awaiting_approval'
+  const abandoned = isParked && outcome?.status === 'failed'
   // T7: NOT `ACTIVE_RUN_STATUSES`. A parked run is not a failure, and this list must never grow.
   if (row && (row.status === 'queued' || row.status === 'running' || abandoned)) {
     const message =
@@ -609,7 +610,7 @@ export async function finishStep(
     const emit = await createEmitter(db, params, realtime, logger)
     await emit({ type: 'error', data: { message, willRetry: false } })
     await emit({ type: 'status', data: { status: 'failed' } })
-  } else if (row && row.status === 'awaiting_input') {
+  } else if (row && isParked) {
     row = (await cancelRun(db, tenantId, runId)) ?? row
     const emit = await createEmitter(db, params, realtime, logger)
     await emit({ type: 'status', data: { status: 'cancelled', reason: 'expired' } })

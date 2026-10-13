@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { rootSpanIdForRun, traceIdForRun } from '@/api/observability/trace-ids'
 import { fullAccessScope } from '@/api/services/access'
+import { decideApproval, listApprovals } from '@/api/services/agents/approvals'
 import { listArtifacts } from '@/api/services/agents/artifacts'
 import { listInterrupts, resolveInterrupt } from '@/api/services/agents/interrupts'
 import { AGENTS, type AgentContext, type AnyAgentDefinition } from '@/api/services/agents/registry'
@@ -681,5 +682,109 @@ describe('the suspend/resume loop (issue #17)', () => {
       status: 'cancelled',
       error: null,
     })
+  })
+
+  it('human approval: parks on awaiting_approval, resumes on approve, and completes with exactly-once effect (Issue #3)', async () => {
+    const env = createTestEnv()
+    script([])
+    let entries = 0
+    let effectExecutions = 0
+
+    installAgent(async ctx => {
+      entries += 1
+      // Ask for durable human approval
+      const decision = await ctx.approve('deploy-prod', { version: '2.0.0' })
+      expect(decision.approved).toBe(true)
+
+      // Guarded side effect using ctx.once
+      await ctx.once('execute-deploy', async () => {
+        effectExecutions += 1
+        return { deployed: true }
+      })
+
+      return { entries, effectExecutions, decision }
+    })
+    const { run, tenant, user } = await queuedRun(env)
+
+    const { outcome, names, waits } = await drive(env, run.id, tenant.id, {
+      onWait: async () => {
+        // Assert the run is parked awaiting_approval in the database before deciding
+        const midRow = await getRun(db, tenant.id, run.id)
+        expect(midRow?.status).toBe('awaiting_approval')
+
+        // Assert the approval row was persisted as pending
+        const approvals = await listApprovals(db, tenant.id, run.id, 'pending')
+        expect(approvals).toHaveLength(1)
+        expect(approvals[0]?.key).toBe('deploy-prod')
+
+        // Decide: approve the request
+        const decided = await decideApproval(db, {
+          tenantId: tenant.id,
+          runId: run.id,
+          key: 'deploy-prod',
+          decision: 'approve',
+          userId: user.id,
+          note: 'Approved for launch',
+        })
+        expect(decided?.status).toBe('approved')
+
+        // Un-park the row (status flipping awaiting_approval -> running)
+        await resumeRun(db, tenant.id, run.id)
+
+        return { interruptId: null }
+      },
+    })
+
+    expect(outcome.status).toBe('succeeded')
+    expect(entries).toBe(2)
+    expect(effectExecutions).toBe(1)
+    expect(names).toEqual(['claim', 'execute#0', 'resume#0', 'execute#1', 'finish'])
+    expect(waits[0]?.name).toBe('resume#0')
+
+    const finalRow = await getRun(db, tenant.id, run.id)
+    expect(finalRow?.status).toBe('succeeded')
+    expect(finalRow?.error).toBeNull()
+    expect((finalRow?.output as any)?.effectExecutions).toBe(1)
+  })
+
+  it('human approval: cancels run and halts execution when rejected (Issue #3)', async () => {
+    const env = createTestEnv()
+    script([])
+    let entries = 0
+    let effectExecutions = 0
+
+    installAgent(async ctx => {
+      entries += 1
+      await ctx.approve('destroy-db', { target: 'production' })
+      // Guarded effect must never run
+      effectExecutions += 1
+      return { entries }
+    })
+    const { run, tenant, user } = await queuedRun(env)
+
+    const { outcome, names } = await drive(env, run.id, tenant.id, {
+      onWait: async () => {
+        // Reject the approval
+        await decideApproval(db, {
+          tenantId: tenant.id,
+          runId: run.id,
+          key: 'destroy-db',
+          decision: 'reject',
+          userId: user.id,
+          note: 'Not permitted',
+        })
+        await resumeRun(db, tenant.id, run.id)
+        return { interruptId: null }
+      },
+    })
+
+    expect(outcome.status).toBe('cancelled')
+    expect(entries).toBe(2)
+    expect(effectExecutions).toBe(0)
+    expect(names).toEqual(['claim', 'execute#0', 'resume#0', 'execute#1', 'finish'])
+
+    const finalRow = await getRun(db, tenant.id, run.id)
+    expect(finalRow?.status).toBe('cancelled')
+    expect(finalRow?.error).toBeNull()
   })
 })
