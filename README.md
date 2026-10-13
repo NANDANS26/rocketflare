@@ -6,6 +6,8 @@
 
 <p align="center"><strong>A multi-tenant SaaS starter kit for Cloudflare Workers — copy it, rename it, ship an internal tool or a B2B product.</strong></p>
 
+<p align="center">See <a href="https://github.com/rocketflare-dev/rocketpod"><strong>Rocketpod</strong></a> for a version of Rocketflare that runs without Cloudflare (Node in containers, Postgres for everything).</p>
+
 Rocketflare is one repository that already solves the platform work every internal or B2B product
 needs before its first real feature: tenancy, sign-in, roles and permissions, background jobs,
 realtime, file storage, analytics dashboards, an AI layer (chat, agents, retrieval) and a CLI —
