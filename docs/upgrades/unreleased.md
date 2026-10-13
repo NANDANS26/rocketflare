@@ -4,28 +4,36 @@ previous: 0.20.0
 date: null
 breaking: false
 migrations: []
-areas: []
-touches_surfaces: []
+areas:
+  - agents
+  - ai
+touches_surfaces:
+  - shared
+  - web
 requires_surfaces: []
 manual: false
 ---
 
 ## What changed
 
-_Nothing yet. Add an entry here in the same pull request as the change. This first paragraph is
-lifted VERBATIM into `CHANGELOG.md`, so make it ONE standalone summary sentence of ≤ 40 words —
-then one bullet per change, one line each, and no `###` sub-headings. Rationale belongs in
-`docs/CONCEPTS.md` and is linked, never restated; see `README.md` beside this file._
+Enforce per-agent execution policies and centralize salvage on budget exhaustion across agent tool loops.
+
+- Added optional `policy` to shared `AgentMeta` (`maxTurns`, `maxToolCalls`, `maxDuration`, `repeatedFailureLimit`, `onExhaustion`).
+- Enforced turn, tool-call, duration budgets, and consecutive tool failure limits centrally in `runToolLoop`.
+- Centralized salvage logic for `onExhaustion: 'final-answer'`, falling back to a structured call over the terminal tool.
+- Displayed agent execution policy limits on the Agents page UI.
 
 ## How to apply
 
-_Numbered, imperative, each step self-contained — no "these", "them" or "the above" reaching
-outside its own step._
+1. Run `pnpm install` and `pnpm typecheck` to verify updated shared `AgentMeta` types.
+2. If custom agents implement custom salvage routines, remove the duplicate fallback and configure `policy: { onExhaustion: 'final-answer' }` on their `AgentMeta`.
 
 ## Conflicts to expect
 
-_One line each: `path → what changed → what to do`. Or exactly `None.`_
+`apps/web/src/api/services/ai/kit.ts` → `runToolLoop` policy support → merge policy loop controls.
 
 ## Verify
 
-_Numbered checkable commands and assertions only._
+1. Run `pnpm --filter @rocketflare/web exec vitest run --project config tests/config/agent-execution-policy.test.ts`.
+2. Run `pnpm typecheck`.
+3. Run `pnpm lint`.

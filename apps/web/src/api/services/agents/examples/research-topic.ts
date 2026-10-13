@@ -46,7 +46,7 @@ import type { TokenUsage } from '@rocketflare/shared/ai/chat'
 import { choicePayloadSchema } from '@rocketflare/shared/ai/interrupts'
 import { z } from 'zod'
 import { ingestText } from '../../ai/ingest'
-import { callStructuredTool, runToolLoop, type Tool } from '../../ai/kit'
+import { runToolLoop, type Tool } from '../../ai/kit'
 import type { ChatMessage } from '../../ai/types'
 import { recordUsage } from '../../ai/usage'
 import type { AgentContext, AgentDefinition } from '../registry'
@@ -290,6 +290,10 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
     outputSchema: researchTopicOutputSchema,
     promptKey: 'research-topic',
     exclusive: true,
+    policy: {
+      maxTurns: RESEARCH_MAX_TURNS,
+      onExhaustion: 'final-answer',
+    },
   },
 
   async run(ctx: AgentContext<ResearchTopicInput>) {
@@ -325,7 +329,8 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
       system,
       messages,
       tools: [...ctx.tools, askHumanTool(ctx), indexFindingTool(ctx), submitAnswerTool as Tool],
-      maxTurns: Math.min(ctx.cfg.AGENT_MAX_TURNS, RESEARCH_MAX_TURNS),
+      maxTurns: ctx.cfg.AGENT_MAX_TURNS,
+      policy: researchTopicAgent.meta.policy,
       // The two halves of the HITL gate, and neither is optional once a tool declares
       // `requiresApproval`: without `approvals` the answered gate is asked again on the next
       // attempt; without `runApproved` the approved write runs a second time on a step retry —
@@ -411,28 +416,11 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
     )
     await ctx.checkCancelled()
 
-    // Salvage: the model stopped without the terminal call (prose, or the turn cap). Ask once more
-    // with the tool forced over the transcript we already have.
-    let submitted = loop.terminalInput as SubmitAnswer | null
-    const salvaged = submitted === null
+    const submitted = loop.terminalInput as SubmitAnswer | null
     if (!submitted) {
-      await ctx.step('answer', 'Writing the answer', 'running', `recovering (${loop.stopReason})`)
-      submitted = await callStructuredTool(ctx.chat.client, {
-        model: ctx.chat.model,
-        maxTokens: Math.min(ctx.chat.maxOutputTokens, ANSWER_MAX_TOKENS),
-        system,
-        messages: loop.messages,
-        tool: {
-          name: SUBMIT_ANSWER_TOOL,
-          description: submitAnswerTool.description,
-          schema: submitAnswerSchema,
-        },
-        // The loop just sent this transcript with rolling breakpoints, so on a caching provider
-        // (Anthropic) the recovery reads the prefix instead of paying for it twice.
-        cache: true,
-        // Fires before `callStructuredTool` throws, so a failed recovery is still ledgered.
-        onUsage: extra => void ledger(extra),
-      })
+      throw new Error(
+        `The research agent exhausted its execution budget without producing an answer (${loop.stopReason})`
+      )
     }
 
     const citations = verifyCitations(submitted.citations, seen)
@@ -465,6 +453,6 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
       'done',
       `${citations.length} citation${citations.length === 1 ? '' : 's'}`
     )
-    return { answer: submitted.answer, citations, turns: loop.turns + (salvaged ? 1 : 0) }
+    return { answer: submitted.answer, citations, turns: loop.turns }
   },
 }

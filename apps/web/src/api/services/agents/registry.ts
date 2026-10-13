@@ -242,6 +242,7 @@ export function listAgentInfo(): AgentInfo[] {
     promptKey: a.meta.promptKey,
     exclusive: a.meta.exclusive,
     approvers: a.meta.approvers ?? 'requester',
+    policy: a.meta.policy,
     inputJsonSchema: toolInputSchema(a.meta.inputSchema),
   }))
   return agentInfoCache

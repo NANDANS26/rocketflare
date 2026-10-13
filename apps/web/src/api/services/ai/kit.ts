@@ -9,6 +9,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk'
+import type { AgentExecutionPolicy } from '@rocketflare/shared/ai/agents'
 import { type TokenUsage, tokenUsageSchema } from '@rocketflare/shared/ai/chat'
 import { aiProviderSchema } from '@rocketflare/shared/ai/config'
 import type { AgentInterruptSpec, JsonSchema } from '@rocketflare/shared/ai/interrupts'
@@ -426,6 +427,8 @@ export interface RunToolLoopOptions {
   /** Hard cap on model turns (live agents pass `cfg.AGENT_MAX_TURNS`). */
   maxTurns?: number
   maxTokens?: number
+  /** Execution policy bounding turns, tool calls, duration and failure handling (issue #1). */
+  policy?: AgentExecutionPolicy
   /** Called once per turn (before tools run) so callers can stream live progress. */
   onStep?: (step: ToolLoopStep) => void | Promise<void>
   /** Fine-grained transcript: text blocks, each tool call, each result (after the handler). */
@@ -475,7 +478,15 @@ export interface ToolLoopResult {
   terminalInput: unknown | null
   terminalTool: string | null
   turns: number
-  stopReason: StopReason | 'max_turns' | 'no_tool_call' | 'interrupt'
+  stopReason:
+    | StopReason
+    | 'max_turns'
+    | 'no_tool_call'
+    | 'interrupt'
+    | 'max_tool_calls'
+    | 'max_duration'
+    | 'repeated_failures'
+    | 'exhausted'
   usage: TokenUsage
   /** The full transcript (seed + assistant/tool turns); also what `onCheckpoint` persists. */
   messages: ChatMessage[]
@@ -562,9 +573,26 @@ export async function runToolLoop(
   client: ChatClient,
   opts: RunToolLoopOptions
 ): Promise<ToolLoopResult> {
-  const maxTurns = opts.maxTurns ?? 8
+  const policy = opts.policy
+  const hardCeilingTurns = opts.maxTurns ?? 8
+  const maxTurns =
+    policy?.maxTurns !== undefined ? Math.min(hardCeilingTurns, policy.maxTurns) : hardCeilingTurns
+
+  const maxToolCalls = policy?.maxToolCalls ?? Infinity
+  const maxDurationMs = policy?.maxDuration !== undefined ? policy.maxDuration * 1000 : Infinity
+  const repeatedFailureLimit = policy?.repeatedFailureLimit ?? Infinity
+  const onExhaustion = policy?.onExhaustion ?? 'final-answer'
+
+  const startTime = Date.now()
+  let toolCallsCount = 0
+  let consecutiveFailures = 0
+
+  const isDurationExhausted = () => Date.now() - startTime >= maxDurationMs
+
   const byName = new Map(opts.tools.map(t => [t.name, t]))
   const definitions = opts.tools.map(toToolDefinition)
+  const terminalToolDef = opts.tools.find(t => !t.handler)
+
   // A resumed loop starts from the stored transcript, NOT the seed: replaying it would re-ask the
   // model everything the previous attempt already paid for.
   const messages: ChatMessage[] = [...(opts.resume?.messages ?? opts.messages)]
@@ -636,9 +664,20 @@ export async function runToolLoop(
   const executeToolUses = async (
     toolUses: ToolUseBlock[],
     turn: number
-  ): Promise<ContentBlock[]> => {
+  ): Promise<{
+    results: ContentBlock[]
+    stoppedEarly?: 'max_tool_calls' | 'repeated_failures' | 'max_duration'
+  }> => {
     const results: ContentBlock[] = []
     for (const block of toolUses) {
+      if (toolCallsCount >= maxToolCalls) {
+        return { results, stoppedEarly: 'max_tool_calls' }
+      }
+      if (isDurationExhausted()) {
+        return { results, stoppedEarly: 'max_duration' }
+      }
+
+      toolCallsCount += 1
       const tool = byName.get(block.name)
       const approval = opts.approvals?.get(block.id)
       let outcome: { text: string; isError: boolean }
@@ -665,6 +704,13 @@ export async function runToolLoop(
       } else {
         outcome = await runHandler(tool, block.name, block.input, block.id)
       }
+
+      if (outcome.isError) {
+        consecutiveFailures += 1
+      } else {
+        consecutiveFailures = 0
+      }
+
       results.push({
         type: 'tool_result',
         toolUseId: block.id,
@@ -679,8 +725,68 @@ export async function runToolLoop(
         resultText: outcome.text,
         isError: outcome.isError,
       })
+
+      if (consecutiveFailures >= repeatedFailureLimit) {
+        return { results, stoppedEarly: 'repeated_failures' }
+      }
     }
-    return results
+    return { results }
+  }
+
+  /**
+   * Handle budget exhaustion: either attempt salvage if onExhaustion === 'final-answer',
+   * or return with failure.
+   */
+  const handleExhaustion = async (
+    reason: 'max_turns' | 'no_tool_call' | 'max_tool_calls' | 'max_duration' | 'repeated_failures'
+  ): Promise<ToolLoopResult> => {
+    if (onExhaustion === 'final-answer' && terminalToolDef) {
+      try {
+        const salvagedInput = await callStructuredTool(client, {
+          model: opts.model,
+          maxTokens: opts.maxTokens ?? 4096,
+          system: opts.system,
+          messages,
+          tool: {
+            name: terminalToolDef.name,
+            description: terminalToolDef.description,
+            schema: terminalToolDef.schema,
+          },
+          cache: true,
+          signal: opts.signal,
+          onUsage: extra => {
+            usage = addUsage(usage, extra)
+          },
+        })
+        return {
+          terminalInput: salvagedInput,
+          terminalTool: terminalToolDef.name,
+          turns,
+          stopReason: 'exhausted',
+          usage,
+          messages,
+        }
+      } catch (_err) {
+        // Salvage failed: must be reported as failure, not false success.
+        return {
+          terminalInput: null,
+          terminalTool: null,
+          turns,
+          stopReason: reason,
+          usage,
+          messages,
+        }
+      }
+    }
+
+    return {
+      terminalInput: null,
+      terminalTool: null,
+      turns,
+      stopReason: reason,
+      usage,
+      messages,
+    }
   }
 
   // T1 — the resume path. A checkpoint whose last turn is an assistant message with unanswered
@@ -691,13 +797,20 @@ export async function runToolLoop(
   if (pending.length > 0) {
     const stillGated = collectGates(pending)
     if (stillGated.length > 0) return await raise(stillGated)
-    messages.push({ role: 'user', content: await executeToolUses(pending, turns) })
+    const { results, stoppedEarly } = await executeToolUses(pending, turns)
+    messages.push({ role: 'user', content: results })
     await checkpoint()
+    if (stoppedEarly) {
+      return await handleExhaustion(stoppedEarly)
+    }
   }
 
   while (turns < maxTurns) {
     if (opts.signal?.aborted)
       throw new AiError('unavailable', client.provider, 'Agent run cancelled')
+    if (isDurationExhausted()) {
+      return await handleExhaustion('max_duration')
+    }
     const injected = await opts.beforeTurn?.(turns + 1)
     for (const message of injected ?? []) {
       if (message.role === 'user' && typeof message.content === 'string') {
@@ -783,32 +896,23 @@ export async function runToolLoop(
     }
 
     if (toolUses.length === 0) {
-      return {
-        terminalInput: null,
-        terminalTool: null,
-        turns,
-        stopReason: 'no_tool_call',
-        usage,
-        messages,
-      }
+      return await handleExhaustion('no_tool_call')
     }
 
     // The gate: after the assistant turn is on the transcript, before any handler has run.
     const gates = collectGates(toolUses)
     if (gates.length > 0) return await raise(gates)
 
-    messages.push({ role: 'user', content: await executeToolUses(toolUses, turns) })
+    const { results, stoppedEarly } = await executeToolUses(toolUses, turns)
+    messages.push({ role: 'user', content: results })
     await checkpoint()
+
+    if (stoppedEarly) {
+      return await handleExhaustion(stoppedEarly)
+    }
   }
 
-  return {
-    terminalInput: null,
-    terminalTool: null,
-    turns,
-    stopReason: 'max_turns',
-    usage,
-    messages,
-  }
+  return await handleExhaustion(isDurationExhausted() ? 'max_duration' : 'max_turns')
 }
 
 // ---- Streaming conversational loop ----------------------------------------------------------

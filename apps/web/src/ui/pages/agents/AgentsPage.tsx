@@ -69,6 +69,14 @@ export default function AgentsPage() {
                         exclusive
                       </span>
                     )}
+                    {agent.policy?.maxTurns && (
+                      <span
+                        className="badge badge-ghost badge-sm text-muted font-mono"
+                        title={`Execution policy: max ${agent.policy.maxTurns} turns, on exhaustion: ${agent.policy.onExhaustion ?? 'final-answer'}`}
+                      >
+                        ≤{agent.policy.maxTurns} turns
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-secondary">{agent.description}</p>
                   <button

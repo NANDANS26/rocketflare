@@ -394,6 +394,18 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   **every step name carries its round**, because a repeated name replays the recorded result.
   A retry resumes: `ctx.checkpoint` keeps the tool-loop transcript and `ctx.once(key, fn)` gives
   once-per-run effects (a DB unique index; at-least-once with a recorded result).
+- **Agent execution policy & exhaustion (Issue #1)**: `AgentMeta.policy` provides an optional declarative
+  execution envelope: `maxTurns`, `maxToolCalls`, `maxDuration` (seconds), `repeatedFailureLimit`, and
+  `onExhaustion` (`'final-answer'` | `'fail'`, default `'final-answer'`). Global configurations
+  `AGENT_MAX_TURNS` and `AGENT_MAX_OUTPUT_TOKENS` remain hard platform ceilings that an agent policy can
+  never exceed (`Math.min(hardCeilingTurns, policy.maxTurns)`). Budgets are checked centrally in `runToolLoop`.
+  When tool execution fails, consecutive failures are incremented; any successful tool execution resets the
+  counter to 0. When `repeatedFailureLimit` is reached, the loop stops early. On budget exhaustion, if
+  `onExhaustion: 'final-answer'`, `runToolLoop` attempts salvage via `callStructuredTool` over the terminal tool;
+  if salvage succeeds, it returns the result with `stopReason: 'exhausted'`. If salvage throws or fails validation,
+  it returns a failure outcome without claiming false success. If `onExhaustion: 'fail'`, the loop terminates
+  immediately as a failed run with the exhaustion stop reason (`max_turns`, `max_tool_calls`, `max_duration`, or
+  `repeated_failures`).
 - **Human-in-the-loop (#17)**: `ctx.interrupt({ key, spec })` parks the run on
   `step.waitForEvent`. The key must be stable across attempts. Answering is a compare-and-set on the
   row, *then* a nudge to the instance (`not_found` → restart as `<runId>-rN`). There are four

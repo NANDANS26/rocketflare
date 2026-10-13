@@ -65,7 +65,22 @@ export interface AgentMeta<Input = unknown, Output = unknown> {
    * adds its own subject.
    */
   approvers?: z.infer<typeof agentApproversSchema>
+  /** Execution policy bounding turns, tool calls, duration and failure handling (issue #1). */
+  policy?: AgentExecutionPolicy
 }
+
+/** Execution policy bounding turns, tool calls, duration and failure handling (issue #1). */
+export const agentExecutionPolicySchema = z.object({
+  maxTurns: z.number().int().positive().optional(),
+  maxToolCalls: z.number().int().positive().optional(),
+  /** Maximum duration in seconds. */
+  maxDuration: z.number().int().positive().optional(),
+  /** Stop after this many consecutive failing tool calls. */
+  repeatedFailureLimit: z.number().int().positive().optional(),
+  /** What to do when the policy limits are exhausted: attempt salvage or fail the run. */
+  onExhaustion: z.enum(['final-answer', 'fail']).default('final-answer'),
+})
+export type AgentExecutionPolicy = z.infer<typeof agentExecutionPolicySchema>
 
 /** `GET /api/agents` item — the meta without its zod schemas (not serialisable). */
 export const agentInfoSchema = z.object({
@@ -75,6 +90,7 @@ export const agentInfoSchema = z.object({
   promptKey: promptKeySchema,
   exclusive: z.boolean(),
   approvers: agentApproversSchema.default('requester'),
+  policy: agentExecutionPolicySchema.optional(),
   /**
    * The agent's `inputSchema` as JSON Schema, produced server-side by `toolInputSchema()`
    * (`services/ai/kit.ts`). Three reasons it is this and not zod: the conversion already exists;
