@@ -29,7 +29,11 @@ import {
   summarizeTextOutputSchema,
 } from '@rocketflare/shared/ai/agents'
 import { type TokenUsage, tokenUsageSchema } from '@rocketflare/shared/ai/chat'
-import { type AiProvider, WORKERS_AI_CHAT_MODEL } from '@rocketflare/shared/ai/config'
+import {
+  type AiProvider,
+  DEFAULT_MODELS,
+  WORKERS_AI_CHAT_MODEL,
+} from '@rocketflare/shared/ai/config'
 import { estimateCostMicrocents } from '@rocketflare/shared/ai/pricing'
 import { and, count, eq, gt, isNull, sql } from 'drizzle-orm'
 import { databaseUrlTarget } from '../../../scripts/lib/bootstrap-lib.mjs'
@@ -279,7 +283,7 @@ const DEMO_TENANTS = [
   },
 ] as const
 
-const CLAUDE_MODEL = 'claude-sonnet-4-5'
+const CLAUDE_MODEL = DEFAULT_MODELS.anthropic
 
 // ---- Knowledge base -----------------------------------------------------------------------------
 

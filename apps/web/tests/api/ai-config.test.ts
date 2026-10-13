@@ -7,6 +7,7 @@
 import {
   aiConfigSchema,
   aiReadinessSchema,
+  DEFAULT_MODELS,
   WORKERS_AI_CHAT_MODEL,
 } from '@rocketflare/shared/ai/config'
 import { and, eq } from 'drizzle-orm'
@@ -218,8 +219,25 @@ describe('POST /api/ai/config', () => {
         'thinking_unsupported',
       ],
       [
-        { label: 'x', provider: 'anthropic', model: 'm', apiKey: 'k', thinking: { enabled: true } },
+        // A budget is required only by a model that takes one (Claude ≤ 4.5).
+        {
+          label: 'x',
+          provider: 'anthropic',
+          model: 'claude-haiku-4-5',
+          apiKey: 'k',
+          thinking: { enabled: true },
+        },
         'thinking_budget_required',
+      ],
+      [
+        {
+          label: 'x',
+          provider: 'openai',
+          model: 'gpt-4.1',
+          apiKey: 'k',
+          thinking: { enabled: true },
+        },
+        'thinking_unsupported',
       ],
       [
         { label: 'x', provider: 'openai', model: 'm', apiKey: 'k', serviceTier: 'priority' },
@@ -357,7 +375,7 @@ describe('GET /api/ai/config/readiness', () => {
       ready: true,
       source: 'platform',
       provider: 'anthropic',
-      model: 'claude-sonnet-4-5',
+      model: DEFAULT_MODELS.anthropic,
     })
     expect(r.embeddings.source).toBe('none')
     // D37: no TypeSafe key, so decisions fall back to the chat model — ready, and labelled so.
@@ -365,7 +383,7 @@ describe('GET /api/ai/config/readiness', () => {
       ready: true,
       source: 'fallback',
       provider: 'anthropic',
-      model: 'claude-sonnet-4-5',
+      model: DEFAULT_MODELS.anthropic,
     })
 
     // The AI binding makes BOTH scopes ready with no key at all (chat = the Workers AI floor).

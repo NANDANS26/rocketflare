@@ -429,8 +429,8 @@ cost line before relying on it, then pick any of these:
    and `/chat` streams a reply.
 1. **Platform key (optional).** `ANTHROPIC_API_KEY=` in `apps/web/.dev.vars` (deployed:
    `wrangler secret put`, Part 3). Every tenant without its own chat provider then uses it with
-   `claude-sonnet-4-5` — it ranks above Workers AI. Verify: Settings → AI (as owner/admin) shows chat
-   readiness `Anthropic · claude-sonnet-4-5 · platform default`; `curl -b <cookie>
+   `claude-haiku-5-5` (`DEFAULT_MODELS.anthropic`) — it ranks above Workers AI. Verify: Settings → AI (as owner/admin) shows chat
+   readiness `Anthropic · claude-haiku-5-5 · platform default`; `curl -b <cookie>
    localhost:3001/api/ai/config/readiness` → `"chat":{…,"source":"platform","provider":"anthropic"…}`.
 2. **Tenant provider (no platform key).** Settings → AI → *Add provider*: scope `chat`, a label (it is
    the upsert key — renaming later means delete + re-add), provider `anthropic` / `anthropic_compatible`

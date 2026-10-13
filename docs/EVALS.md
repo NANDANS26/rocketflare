@@ -93,7 +93,7 @@ assigns it, or on `--judge-model <id>` for one run. Every judge call is costed i
 ```
 pnpm eval                          # everything
 pnpm eval knowledge --case refund-window,not-covered
-pnpm eval agents --model claude-haiku-4-5 --judge-model claude-opus-5-5
+pnpm eval agents --model claude-haiku-5-5 --judge-model claude-opus-5-5
 pnpm eval knowledge --provider gemini                      # gemini-2.5-flash as the target
 pnpm eval knowledge --provider fireworks --model accounts/fireworks/models/gpt-oss-120b
 pnpm eval knowledge --judge-provider gemini                # a non-Claude judge
