@@ -434,7 +434,10 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   replaced, chunks rebuilt, a replaced original removed from R2 — so a connector's re-sync never
   duplicates. Plugins reach it through `ingestDocument` (§16).
 - **Usage**: one `ai_usage` row per call, costed at write time from the one price table
-  (`shared/ai/pricing`; an unknown model gets `null` and is counted as unpriced).
+  (`shared/ai/pricing`; an unknown model gets `null` and is counted as unpriced). Tool loops tap
+  token usage incrementally per turn (`onUsage`) and record via `ctx.once` keyed per turn, so
+  cancellation mid-loop preserves tokens spent on executed turns, and resumed checkpoints never
+  re-bill or duplicate previously executed turns.
 - **Tracing (D32, supersedes D16's Langfuse ingestion client)**: `api/observability/`. Every AI call
   site talks to the `Tracer` seam; the recorder batches ended spans and flushes (in `waitUntil`, or
   awaited at the end of a stream, step or job) to two sinks: our own **OTLP/HTTP exporter**

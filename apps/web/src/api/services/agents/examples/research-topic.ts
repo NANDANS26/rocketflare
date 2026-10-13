@@ -299,9 +299,9 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
     /** documentId → title, from the tools' own answers. */
     const seen = new Map<string, string>()
     /**
-     * Written the moment tokens are spent, not at the end: a failed salvage or a cancellation
-     * between turns must still leave the loop's tokens in the ledger. (`runToolLoop` has no
-     * per-turn usage tap, so a cancel mid-loop still loses that run's tokens — a kit gap.)
+     * Written the moment tokens are spent, per turn: a failed salvage or a cancellation
+     * mid-loop leaves every executed turn's tokens in the ledger. Resumed checkpoints do not
+     * re-record turns already ledgered.
      */
     const ledger = (usage: TokenUsage) =>
       recordUsage(ctx.db, {
@@ -353,6 +353,12 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
       // three attempts can never spend three times the cap.
       ...(resume ? { resume } : {}),
       onCheckpoint: checkpoint => ctx.checkpoint.save(checkpoint),
+      onUsage: async (turnUsage, turn) => {
+        await ctx.once(`usage:turn-${turn}`, async () => {
+          await ledger(turnUsage)
+          return { inputTokens: turnUsage.inputTokens, outputTokens: turnUsage.outputTokens }
+        })
+      },
       // The loop takes no AbortSignal, so these two callbacks ARE the cancellation poll: once per
       // model turn, and once per tool result — a run doing slow tool work still stops promptly.
       onStep: async step => {
@@ -397,11 +403,6 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
           })
         }
       },
-    })
-    // Once per run, not once per attempt: `loop.usage` includes the resumed attempts' tokens.
-    await ctx.once('loop-usage', async () => {
-      await ledger(loop.usage)
-      return { inputTokens: loop.usage.inputTokens, outputTokens: loop.usage.outputTokens }
     })
     await ctx.step(
       'research',

@@ -426,6 +426,8 @@ export interface RunToolLoopOptions {
   /** Hard cap on model turns (live agents pass `cfg.AGENT_MAX_TURNS`). */
   maxTurns?: number
   maxTokens?: number
+  /** Called once per turn with the model usage of that turn (current attempt only). */
+  onUsage?: (usage: TokenUsage, turn: number) => void | Promise<void>
   /** Called once per turn (before tools run) so callers can stream live progress. */
   onStep?: (step: ToolLoopStep) => void | Promise<void>
   /** Fine-grained transcript: text blocks, each tool call, each result (after the handler). */
@@ -717,6 +719,7 @@ export async function runToolLoop(
       signal: opts.signal,
     })
     usage = addUsage(usage, result.usage)
+    await opts.onUsage?.(result.usage, turns)
     const toolUses = toolUsesOf(result.content)
 
     if (opts.onEvent) {

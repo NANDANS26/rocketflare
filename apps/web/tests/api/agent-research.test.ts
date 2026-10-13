@@ -180,14 +180,13 @@ describe('research-topic agent', () => {
     expect(toolNames).toEqual(['search_knowledge', 'search_knowledge'])
     expect(events.some(e => e.type === 'text')).toBe(false)
 
-    // Usage is the sum of both turns, under the agent's feature key.
+    // Usage is recorded per turn, under the agent's feature key.
     const usage = await db.query.aiUsage.findMany({ where: eq(aiUsage.tenantId, tenant.id) })
-    expect(usage).toHaveLength(1)
-    expect(usage[0]).toMatchObject({
-      feature: 'agent:research-topic',
-      inputTokens: 100,
-      outputTokens: 30,
-    })
+    expect(usage).toHaveLength(2)
+    expect(usage).toMatchObject([
+      { feature: 'agent:research-topic', inputTokens: 40, outputTokens: 10 },
+      { feature: 'agent:research-topic', inputTokens: 60, outputTokens: 20 },
+    ])
   })
 
   it('drops a citation naming a document the search never returned', async () => {
@@ -314,15 +313,18 @@ describe('research-topic agent', () => {
     // document found before the retry is not mistaken for a hallucination.
     expect(output.citations).toEqual([{ documentId: document.id, title: 'Onboarding handbook' }])
 
-    // Ledgered ONCE for the whole run, summing both attempts — `ctx.once` is what stops the
-    // resumed attempt writing the loop's tokens a second time.
+    // Ledgered per turn across both attempts — `ctx.once` is what stops the
+    // resumed attempt writing the first turn's tokens a second time.
     const usage = await db.query.aiUsage.findMany({ where: eq(aiUsage.tenantId, tenant.id) })
-    expect(usage).toHaveLength(1)
-    expect(usage[0]).toMatchObject({ inputTokens: 100, outputTokens: 30 })
+    expect(usage).toHaveLength(2)
+    expect(usage).toMatchObject([
+      { inputTokens: 40, outputTokens: 10 },
+      { inputTokens: 60, outputTokens: 20 },
+    ])
     const effects = await db.query.agentRunEffects.findMany({
       where: eq(agentRunEffects.runId, run.id),
     })
-    expect(effects.map(e => e.key)).toEqual(['loop-usage'])
+    expect(effects.map(e => e.key).sort()).toEqual(['usage:turn-1', 'usage:turn-2'])
 
     // Settling drops the checkpoint: nothing will resume, and the transcript is not a record.
     const settled = await db.query.agentRuns.findFirst({ where: eq(agentRuns.id, run.id) })
