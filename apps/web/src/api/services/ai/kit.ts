@@ -657,6 +657,43 @@ export async function runToolLoop(
     }
   }
 
+  const defaultConcurrency = 4
+  const rawCap = policy?.maxConcurrentToolCalls
+  const maxConcurrentToolCalls =
+    typeof rawCap === 'number' && Number.isInteger(rawCap) && rawCap >= 1
+      ? rawCap
+      : defaultConcurrency
+
+  const executeSingleToolUse = async (
+    block: ToolUseBlock
+  ): Promise<{ text: string; isError: boolean }> => {
+    const tool = byName.get(block.name)
+    const approval = opts.approvals?.get(block.id)
+    if (approval?.status === 'cancelled') {
+      if (approval.onReject === 'cancel_run') {
+        throw new InterruptDeclinedError(approval.interruptId, approval.note)
+      }
+      // `tell_model`: declining is an ANSWER, not a fault, so `isError` is false. An error result
+      // would have the model apologising and retrying the thing it was just refused.
+      return {
+        text: approval.note
+          ? `A person declined this action: ${approval.note}`
+          : 'A person declined this action. Do not try it again; continue another way.',
+        isError: false,
+      }
+    }
+    if (approval) {
+      // An approver may have edited the arguments; the route re-validated them against the tool's
+      // own schema before storing them, and `runHandler` validates once more here.
+      const input = approval.input !== undefined ? approval.input : block.input
+      const run = () => runHandler(tool, block.name, input, block.id)
+      return opts.runApproved
+        ? await opts.runApproved(`tool:${approval.interruptId}`, run)
+        : await run()
+    }
+    return await runHandler(tool, block.name, block.input, block.id)
+  }
+
   /**
    * Run a turn's tool calls and build its `tool_result` blocks. The ONE place the approval rules
    * live — the in-loop path and the resume path both call it.
@@ -668,43 +705,127 @@ export async function runToolLoop(
     results: ContentBlock[]
     stoppedEarly?: 'max_tool_calls' | 'repeated_failures' | 'max_duration'
   }> => {
+    if (toolCallsCount >= maxToolCalls) {
+      return { results: [], stoppedEarly: 'max_tool_calls' }
+    }
+    if (isDurationExhausted()) {
+      return { results: [], stoppedEarly: 'max_duration' }
+    }
+
+    if (maxConcurrentToolCalls === 1 || toolUses.length <= 1) {
+      const results: ContentBlock[] = []
+      for (const block of toolUses) {
+        if (toolCallsCount >= maxToolCalls) {
+          return { results, stoppedEarly: 'max_tool_calls' }
+        }
+        if (isDurationExhausted()) {
+          return { results, stoppedEarly: 'max_duration' }
+        }
+
+        toolCallsCount += 1
+        const outcome = await executeSingleToolUse(block)
+
+        if (outcome.isError) {
+          consecutiveFailures += 1
+        } else {
+          consecutiveFailures = 0
+        }
+
+        results.push({
+          type: 'tool_result',
+          toolUseId: block.id,
+          content: outcome.text,
+          isError: outcome.isError,
+        })
+        await opts.onEvent?.({
+          kind: 'tool_result',
+          turn,
+          toolUseId: block.id,
+          name: block.name,
+          resultText: outcome.text,
+          isError: outcome.isError,
+        })
+
+        if (consecutiveFailures >= repeatedFailureLimit) {
+          return { results, stoppedEarly: 'repeated_failures' }
+        }
+      }
+      return { results }
+    }
+
+    // Bounded concurrent execution (cap > 1 and toolUses.length > 1)
+    type TaskOutcome =
+      | { kind: 'result'; outcome: { text: string; isError: boolean } }
+      | { kind: 'error'; error: unknown }
+
+    const outcomes: (TaskOutcome | undefined)[] = new Array(toolUses.length)
+    let nextIndex = 0
+    let stoppedEarlyReason: 'max_tool_calls' | 'max_duration' | undefined
+    let stopClaiming = false
+
+    const runWorker = async () => {
+      while (true) {
+        if (stopClaiming || opts.signal?.aborted) return
+
+        const index = nextIndex++
+        if (index >= toolUses.length) return
+
+        if (toolCallsCount >= maxToolCalls) {
+          stoppedEarlyReason = stoppedEarlyReason ?? 'max_tool_calls'
+          stopClaiming = true
+          return
+        }
+        if (isDurationExhausted()) {
+          stoppedEarlyReason = stoppedEarlyReason ?? 'max_duration'
+          stopClaiming = true
+          return
+        }
+
+        toolCallsCount += 1
+        const block = toolUses[index]
+
+        try {
+          const outcome = await executeSingleToolUse(block)
+          outcomes[index] = { kind: 'result', outcome }
+        } catch (err) {
+          outcomes[index] = { kind: 'error', error: err }
+          stopClaiming = true
+          return
+        }
+      }
+    }
+
+    const workerCount = Math.min(maxConcurrentToolCalls, toolUses.length)
+    const workers = Array.from({ length: workerCount }, () => runWorker())
+    await Promise.all(workers)
+
+    if (opts.signal?.aborted) {
+      throw new AiError('unavailable', client.provider, 'Agent run cancelled')
+    }
+
     const results: ContentBlock[] = []
-    for (const block of toolUses) {
-      if (toolCallsCount >= maxToolCalls) {
-        return { results, stoppedEarly: 'max_tool_calls' }
-      }
-      if (isDurationExhausted()) {
-        return { results, stoppedEarly: 'max_duration' }
+    for (let i = 0; i < toolUses.length; i++) {
+      const block = toolUses[i]
+      const task = outcomes[i]
+
+      if (!task) {
+        return {
+          results,
+          stoppedEarly:
+            stoppedEarlyReason ??
+            (toolCallsCount >= maxToolCalls
+              ? 'max_tool_calls'
+              : isDurationExhausted()
+                ? 'max_duration'
+                : undefined),
+        }
       }
 
-      toolCallsCount += 1
-      const tool = byName.get(block.name)
-      const approval = opts.approvals?.get(block.id)
-      let outcome: { text: string; isError: boolean }
-      if (approval?.status === 'cancelled') {
-        if (approval.onReject === 'cancel_run') {
-          throw new InterruptDeclinedError(approval.interruptId, approval.note)
-        }
-        // `tell_model`: declining is an ANSWER, not a fault, so `isError` is false. An error result
-        // would have the model apologising and retrying the thing it was just refused.
-        outcome = {
-          text: approval.note
-            ? `A person declined this action: ${approval.note}`
-            : 'A person declined this action. Do not try it again; continue another way.',
-          isError: false,
-        }
-      } else if (approval) {
-        // An approver may have edited the arguments; the route re-validated them against the tool's
-        // own schema before storing them, and `runHandler` validates once more here.
-        const input = approval.input !== undefined ? approval.input : block.input
-        const run = () => runHandler(tool, block.name, input, block.id)
-        outcome = opts.runApproved
-          ? await opts.runApproved(`tool:${approval.interruptId}`, run)
-          : await run()
-      } else {
-        outcome = await runHandler(tool, block.name, block.input, block.id)
+      if (task.kind === 'error') {
+        throw task.error
       }
 
+      const outcome = task.outcome
       if (outcome.isError) {
         consecutiveFailures += 1
       } else {
@@ -730,6 +851,11 @@ export async function runToolLoop(
         return { results, stoppedEarly: 'repeated_failures' }
       }
     }
+
+    if (stoppedEarlyReason) {
+      return { results, stoppedEarly: stoppedEarlyReason }
+    }
+
     return { results }
   }
 
