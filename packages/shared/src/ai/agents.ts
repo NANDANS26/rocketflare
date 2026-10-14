@@ -73,6 +73,8 @@ export interface AgentMeta<Input = unknown, Output = unknown> {
 export const agentExecutionPolicySchema = z.object({
   maxTurns: z.number().int().positive().optional(),
   maxToolCalls: z.number().int().positive().optional(),
+  /** Maximum number of tool calls to execute concurrently in one turn. Defaults to 4. */
+  maxConcurrentToolCalls: z.number().int().positive().optional(),
   /** Maximum duration in seconds. */
   maxDuration: z.number().int().positive().optional(),
   /** Stop after this many consecutive failing tool calls. */
