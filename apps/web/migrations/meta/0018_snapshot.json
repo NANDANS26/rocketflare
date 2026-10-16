@@ -1,5 +1,5 @@
 {
-  "id": "c2d79c82-5473-43f4-a44c-5af44bf8aaf0",
+  "id": "d6d5064e-7c15-4558-8adc-1cb541c64e06",
   "prevId": "73210610-252c-4ef3-ba4c-f4011c3d1df9",
   "version": "7",
   "dialect": "postgresql",
@@ -1460,13 +1460,6 @@
           "notNull": true,
           "default": "'queued'"
         },
-        "exclusive": {
-          "name": "exclusive",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "input": {
           "name": "input",
           "type": "jsonb",
@@ -1530,6 +1523,12 @@
         },
         "trace_id": {
           "name": "trace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "concurrency_key": {
+          "name": "concurrency_key",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1612,10 +1611,16 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
+            },
+            {
+              "expression": "concurrency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
             }
           ],
           "isUnique": true,
-          "where": "\"agent_runs\".\"exclusive\" AND \"agent_runs\".\"status\" IN ('queued', 'running', 'awaiting_input')",
+          "where": "\"agent_runs\".\"status\" IN ('queued', 'running', 'awaiting_input') AND \"agent_runs\".\"concurrency_key\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}

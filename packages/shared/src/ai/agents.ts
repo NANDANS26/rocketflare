@@ -44,9 +44,11 @@ export type AgentKey = z.infer<typeof agentKeySchema>
  * `exclusive` = at most one ACTIVE run per (tenant, agent), where active is
  * {@link ACTIVE_RUN_STATUSES} — `queued`, `running` **and `awaiting_input`**, so a run parked on a
  * question still holds the slot. Enforced by a partial unique index on `agent_runs` whose predicate
- * is rendered from that same list, never by memory. `exclusive: false` opts out — the run row is
- * written outside the index, so any number may be active at once (one person's conversation with
- * an agent, where two people at once is normal). `approvers` is who may answer this agent's
+ * is rendered from that same list, never by memory. `exclusive: false` opts out — the run row
+ * holds no slot (`agent_runs.concurrency_key` NULL) and sits outside the index, so any number may
+ * be active at once (one person's conversation with an agent, where two people at once is normal).
+ * A server caller narrows either kind to one active run per key with
+ * `enqueueRun({ concurrencyKey })`. `approvers` is who may answer this agent's
  * interrupts: `'requester'` (the default — whoever can see the run) or `'admin'`.
  */
 export interface AgentMeta<Input = unknown, Output = unknown> {

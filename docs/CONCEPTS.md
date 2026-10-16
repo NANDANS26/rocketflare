@@ -390,9 +390,11 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   `kit.document` events produced by a pure mapper, so nothing about a card is stored. The admin
   inspector (`/stats`) is derived per request.
 - **Agents (D7)**: `POST /api/agents/runs` enqueues (row → Workflow instance → 202); the exclusive
-  index dedupes. An agent declaring `exclusive: false` writes its rows `agent_runs.exclusive = false`,
-  outside the index, so any number may be active at once — one person's conversation with an
-  agent, which parks on their answers while others hold conversations of their own. A plugin agent
+  index dedupes, per (tenant, agent, `agent_runs.concurrency_key`) — the SLOT a run holds: `''`
+  for an exclusive agent (one per tenant), a caller's `enqueueRun({ concurrencyKey })` to narrow it
+  to one active run per key, NULL for an agent declaring `exclusive: false`, whose rows sit outside
+  the index so any number may be active at once — one person's conversation with an agent, which
+  parks on their answers while others hold conversations of their own. A plugin agent
   reaches `ctx.interrupt` and the resolved `chatModel` through `AgentCtx` (`@/plugins/api`). The Workflow runs `claim → execute#N → (resume#N | expire#N) → finish`, and
   **every step name carries its round**, because a repeated name replays the recorded result.
   A retry resumes: `ctx.checkpoint` keeps the tool-loop transcript and `ctx.once(key, fn)` gives
