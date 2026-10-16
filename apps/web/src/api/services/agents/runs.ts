@@ -164,7 +164,10 @@ export interface EnqueueRunInput {
 
 export interface EnqueueRunResult {
   run: AgentRunRow
-  /** An active run already existed for this exclusive agent; `run` is THAT run. */
+  /**
+   * An active run already existed for this exclusive agent; `run` is THAT run. Never true for a
+   * non-exclusive agent, whose every enqueue is a run of its own.
+   */
   deduplicated: boolean
 }
 
@@ -196,12 +199,15 @@ export async function enqueueRun(
         tenantId: input.tenantId,
         agentKey: input.agentKey,
         status: 'queued',
+        // Copied from the definition so the partial unique index can read it: a non-exclusive
+        // agent's rows sit outside the predicate, and its enqueue never deduplicates.
+        exclusive: agent.meta.exclusive,
         input: parsed.data,
         requestedByUserId: input.userId,
       })
       .returning()
   } catch (err) {
-    if (!isUniqueViolation(err)) throw err
+    if (!isUniqueViolation(err) || !agent.meta.exclusive) throw err
     const existing = await findActiveRun(db, input.tenantId, input.agentKey)
     if (!existing) throw err // the slot freed between the insert and the read — a retry will win
     return { run: existing, deduplicated: true }

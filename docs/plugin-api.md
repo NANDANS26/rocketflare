@@ -122,8 +122,16 @@ The server surface: the context family, and the types a plugin must be able to n
     One forced tool call, zod-validated, one retry with the issues fed back.
   - `decide: AgentDecide`
     Typed questions answered with probabilities (D37): `decide(key, { state, questions })`, `decide.sift(key, …)`, `decide.pick(key, …)`. The tenant's decisions engine answers —…
+  - `interrupt(ask: AgentInterruptAsk): Promise<AgentInterruptAnswer>`
+    Ask the person a question and park the run until they answer (issue #17) — `approval`, `choice`, `input` or `form`. The SECOND time this line runs (the run resumed after the…
+  - `readonly chatModel: { readonly provider: AiProvider; readonly model: string }`
+    The provider and model this run resolved to (per-agent `agent_models` assignment applied) — what `recordUsage` needs to ledger a `structured` call's `onUsage`. Read-only: the…
 - `interface AgentDecide`
   `ctx.decide` — callable, with the two shapes as properties.
+- `interface AgentInterruptAnswer`
+  The answer. `status` is AG-UI's own `ResumeEntry` vocabulary and there is deliberately no `approved` boolean: two ways to say no is how a UI and a server end up disagreeing.
+- `interface AgentInterruptAsk`
+  What an agent asks a person through {@link AgentContext.interrupt}.
 - `interface AgentTraceContext extends Omit<TraceParams, 'name'>`
 - `class AiNotConfiguredError extends ServiceUnavailableError`
   503 `ai_not_configured`: nothing resolves for the tenant (no config row, no platform key).
@@ -1021,7 +1029,11 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: AgentCtx.toolLoop :: toolLoop(options: PluginToolLoopOptions): Promise<ToolLoopResult>
 @/plugins/api :: member :: AgentCtx.structured :: structured<T>(options: PluginStructuredOptions<T>): Promise<T>
 @/plugins/api :: member :: AgentCtx.decide :: decide: AgentDecide
+@/plugins/api :: member :: AgentCtx.interrupt :: interrupt(ask: AgentInterruptAsk): Promise<AgentInterruptAnswer>
+@/plugins/api :: member :: AgentCtx.chatModel :: readonly chatModel: { readonly provider: AiProvider; readonly model: string }
 @/plugins/api :: interface :: AgentDecide :: interface AgentDecide
+@/plugins/api :: interface :: AgentInterruptAnswer :: interface AgentInterruptAnswer
+@/plugins/api :: interface :: AgentInterruptAsk :: interface AgentInterruptAsk
 @/plugins/api :: interface :: AgentTraceContext :: interface AgentTraceContext extends Omit<TraceParams, 'name'>
 @/plugins/api :: class :: AiNotConfiguredError :: class AiNotConfiguredError extends ServiceUnavailableError
 @/plugins/api :: type :: AnyServerPlugin :: type AnyServerPlugin = ServerPlugin<SharedPlugin>

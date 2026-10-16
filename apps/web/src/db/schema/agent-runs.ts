@@ -3,9 +3,11 @@
  * A row is inserted `queued` BEFORE the Workflow instance is created (id = run id); the `claim`
  * step flips it to `running` with `UPDATE … WHERE status IN ('queued','running') RETURNING` — the
  * row IS the idempotency gate, so a retried step re-claims and a settled row is a no-op.
- * `agent_runs_active_exclusive_idx` (partial unique on `(tenant_id, agent_key)` while active) is
- * the **exclusive** guarantee: a second enqueue while one is queued/running fails at the database,
- * never in memory. `cancelRequestedAt` is the cooperative cancel flag the run polls between turns.
+ * `agent_runs_active_exclusive_idx` (partial unique on `(tenant_id, agent_key)` while active, over
+ * rows whose `exclusive` is true) is the **exclusive** guarantee: a second enqueue while one is
+ * queued/running fails at the database, never in memory. A non-exclusive agent's rows are written
+ * `exclusive = false` and sit outside the predicate, so any number may be active at once.
+ * `cancelRequestedAt` is the cooperative cancel flag the run polls between turns.
  * `input`/`output` are jsonb so a retry re-reads the payload from the row, not a message, and
  * `checkpoint` is where a retried step picks the tool loop back up instead of replaying it.
  */
@@ -13,6 +15,7 @@ import type { AgentKey, AgentRunStatus } from '@rocketflare/shared/ai/agents'
 import { ACTIVE_RUN_STATUSES } from '@rocketflare/shared/ai/agents'
 import { relations, sql } from 'drizzle-orm'
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -52,6 +55,12 @@ export const agentRuns = pgTable(
     /** Text, not an enum: a new agent gains run history without a schema change. */
     agentKey: text('agent_key').$type<AgentKey>().notNull(),
     status: text('status', { enum: AGENT_RUN_STATUS_VALUES }).notNull().default('queued'),
+    /**
+     * The agent's `meta.exclusive` AT ENQUEUE, copied onto the row because a partial index can
+     * only read the row it indexes. Defaults true, so every row written before the column existed
+     * keeps the guarantee it was enqueued under.
+     */
+    exclusive: boolean('exclusive').notNull().default(true),
     input: jsonb('input').notNull(),
     output: jsonb('output'),
     /** Failure message when `failed`. NULL on a cancel — that is a status, not a message. */
@@ -89,10 +98,12 @@ export const agentRuns = pgTable(
     // The predicate is `ACTIVE_RUN_STATUSES`, which INCLUDES `awaiting_input`: a run parked on a
     // human is still *the* active run for that agent, and a narrower predicate would let a second
     // enqueue slip past the guarantee while the first waits for an answer. It is deliberately wider
-    // than `CLAIMABLE_RUN_STATUSES`, which the claim step uses.
+    // than `CLAIMABLE_RUN_STATUSES`, which the claim step uses. A non-exclusive agent (one person's
+    // conversation, where two people at once is the normal case) writes `exclusive = false` and is
+    // simply outside the index.
     uniqueIndex('agent_runs_active_exclusive_idx')
       .on(table.tenantId, table.agentKey)
-      .where(sql`${table.status} IN (${sql.raw(ACTIVE_STATUS_LITERALS)})`),
+      .where(sql`${table.exclusive} AND ${table.status} IN (${sql.raw(ACTIVE_STATUS_LITERALS)})`),
     tenantIsolation('agent_runs'),
   ]
 )

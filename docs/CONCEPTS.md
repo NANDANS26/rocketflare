@@ -390,7 +390,10 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   `kit.document` events produced by a pure mapper, so nothing about a card is stored. The admin
   inspector (`/stats`) is derived per request.
 - **Agents (D7)**: `POST /api/agents/runs` enqueues (row → Workflow instance → 202); the exclusive
-  index dedupes. The Workflow runs `claim → execute#N → (resume#N | expire#N) → finish`, and
+  index dedupes. An agent declaring `exclusive: false` writes its rows `agent_runs.exclusive = false`,
+  outside the index, so any number may be active at once — one person's conversation with an
+  agent, which parks on their answers while others hold conversations of their own. A plugin agent
+  reaches `ctx.interrupt` and the resolved `chatModel` through `AgentCtx` (`@/plugins/api`). The Workflow runs `claim → execute#N → (resume#N | expire#N) → finish`, and
   **every step name carries its round**, because a repeated name replays the recorded result.
   A retry resumes: `ctx.checkpoint` keeps the tool-loop transcript and `ctx.once(key, fn)` gives
   once-per-run effects (a DB unique index; at-least-once with a recorded result).
@@ -522,7 +525,7 @@ no document summary or thumbnail (the card is an excerpt; Workers cannot rasteri
 mitigation); no token-level streaming for runs (would need a per-run DO); char-based history budget
 not derived from the model; sliding window defeats prompt caching on long threads; `enqueueRun`
 does not pre-resolve the client; Workers AI forced tools on off-list models are best-effort; no
-rerank, no generated `tsvector`; no non-exclusive agents; HITL asks cannot be amended, have no
+rerank, no generated `tsvector`; HITL asks cannot be amended, have no
 reminders, and parks are bounded by instance retention (3 days Free / 30 Paid); runs nobody opens
 stay active-looking; no budgets/quotas over `ai_usage` or prompt versioning. Decisions (D37): no
 replay of an agent's CODE over recorded answers (stored and re-askable, not yet re-runnable), no
