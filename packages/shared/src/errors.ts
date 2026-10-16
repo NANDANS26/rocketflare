@@ -46,6 +46,8 @@ export const ERROR_CODES = {
   aiBudgetExceeded: 'ai_budget_exceeded',
   /** Event code, not a status: a run stopped because it reached its token or cost budget (D39). */
   agentBudgetExceeded: 'agent_budget_exceeded',
+  /** Event code, not a status: a run's tool loop ran out under its `policy` with no answer (D39). */
+  agentPolicyExhausted: 'agent_policy_exhausted',
   /** 404: `POST /api/agui/run` was given a `threadId` that exists but is not this user's. */
   aguiThreadNotFound: 'agui_thread_not_found',
   /** 400: the last message of a `RunAgentInput` was not a user turn. */

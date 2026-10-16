@@ -442,9 +442,8 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   status; exit 1 unless every run matches. `--candidate <file>` replays another definition with the
   same key — how a compiled variant is proven against the full agent's history. Local script only:
   no route, no UI. Why: D37 made the judgments recorded; replay makes the CODE around them testable.
-- **Volume (D39)**: an agent is exclusive only if its meta says so. `agent_runs.exclusive` is
-  copied from `meta.exclusive` at enqueue, and the unique index is `exclusive AND active`, so a
-  non-exclusive agent (`triage-research`) runs any number at once. Two tenant-wide gates sit on
+- **Volume (D39)**: exclusivity is the `concurrency_key` slot above (PR #77), so a non-exclusive
+  agent (`triage-research`) runs any number at once. Two tenant-wide gates sit on
   every enqueue: `AGENT_MAX_ACTIVE_RUNS_PER_TENANT` (default 50, 429 `agent_runs_limit` — a soft
   cap, counted then inserted) and `AGENT_TENANT_DAILY_COST_USD` (429 `ai_budget_exceeded`).
   `POST /api/agents/runs/batch` takes up to 100 inputs of one non-exclusive agent (400
@@ -457,12 +456,26 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   most `min(concurrency ?? 4, 6)` at a time: a retry replays the items that finished, the first
   error stops scheduling, and asks from several items become ONE park. No parent/child runs. Every
   call through `ctx.chat.client` and `ctx.decide` is metered — one `ai_usage` row carrying
-  `agent_run_id`, awaited — so an agent writes no ledger rows (`ctx.recordUsage` for a client of its
-  own) and `GET /runs/:id` returns `usage`. The meter checks the run's budget before each call
+  `agent_run_id`, awaited as the call returns, so a run cancelled or failed mid-loop has a row for
+  every turn it paid for (issue #2) — and an agent writes no ledger rows (`ctx.recordUsage` for a
+  client of its own); `GET /runs/:id` returns `usage`. The meter checks the run's budget before each call
   (`meta.budget` over `AGENT_RUN_MAX_TOKENS` / `AGENT_RUN_MAX_COST_USD`, plus the tenant's daily
   cap), starting from every earlier attempt's rows; over → `failed`, event code
   `agent_budget_exceeded`, never retried. Why: "thousands of cases a day" needs many runs, cheap
   fan-out inside one, and a ledger that can say what each run cost.
+- **Policy (D39, issue #1)**: `meta.policy { maxTurns, maxToolCalls, maxDurationSeconds,
+  repeatedFailureLimit, onExhaustion }`, passed to `runToolLoop` as `policy`, is how far one run's
+  loop may go; `AGENT_MAX_TURNS` stays the ceiling. Every limit counts across attempts — turns and
+  ACTIVE time ride the checkpoint (time parked on a person is not counted), tool calls and the
+  failure streak are read back out of the transcript — and every call in the turn that crosses a
+  budget still gets a result, because the next request must not carry an unanswered `tool_use`.
+  Running out is behaviour the loop owns: `'final-answer'` (the default) makes ONE forced call to
+  the loop's single terminal tool over the transcript (`salvaged: true`; what `research-topic`
+  used to do by hand), and a salvage that fails fails the run; `'fail'` throws
+  `ToolLoopExhaustedError` → `failed`, event code `agent_policy_exhausted`, never retried. No
+  policy, no change. **`authorizeTool(call)`** on the same loop is the deny-by-rule half of #3
+  (`requiresApproval` is the ask-a-person half, #17): a refused call is never gated, never run, and
+  the model is told why.
 - **Reading runs**: `agent_run_events` is the durable log, and AG-UI is a pure read-time
   projection (`/agui`), also streamed live by tailing `seq` (`/agui/stream`, #7). A read-stream
   failure emits no `RUN_ERROR` (clients reconnect); `id:` goes on the last frame of a row's group,
@@ -576,7 +589,11 @@ call and, under `ctx.map`, by the calls in flight; the daily cap is a UTC day ov
 runs inside one step on one DB client (six in flight is the ceiling, and a tool loop inside a scope
 restarts on a retry — there is no per-scope checkpoint); a budget error raised inside a tool
 handler is reported to the model as a tool error rather than stopping the run; no batch UI, no
-per-batch cancel, and a batch's runs are not grouped on the runs page. Decisions (D37): no
+per-batch cancel, and a batch's runs are not grouped on the runs page. Policy (D39): a salvage that
+succeeds and then loses its step is paid for again; `maxDurationSeconds` does not count time
+between the last checkpoint and a crash; a policy reaches a loop only when the agent passes it
+(`runToolLoop` has no registry to read); `authorizeTool` is per loop, not a run- or tenant-wide
+rule. Decisions (D37): no
 zod-schema → questions compiler, the `llm_self_report` fallback is uncalibrated with no vote/logprob
 mode, TypeSafe calls are unpriced (no published rates), no per-agent decisions provider
 (`agent_models` is chat-only), and a `sift` over 100 items is the caller's to batch. Replay (D38): a tool loop's model

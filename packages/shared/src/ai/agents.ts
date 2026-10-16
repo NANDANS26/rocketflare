@@ -76,6 +76,13 @@ export interface AgentMeta<Input = unknown, Output = unknown> {
    * (TypeSafe) count toward `maxTokens` only.
    */
   budget?: AgentBudget
+  /**
+   * D39: how far ONE run's tool loop may go, and what happens when it runs out. Enforced by
+   * `runToolLoop` when the agent passes it (`policy: meta.policy`); `AGENT_MAX_TURNS` stays the
+   * ceiling a policy cannot raise. Absent, a loop behaves exactly as before: it stops at the turn
+   * cap and hands back no answer.
+   */
+  policy?: AgentPolicy
 }
 
 /** D39: a per-run spending cap. Either side may be absent — the deployment's default applies. */
@@ -83,6 +90,32 @@ export interface AgentBudget {
   maxTokens?: number
   maxCostUsd?: number
 }
+
+export const AGENT_EXHAUSTION_MODES = ['final-answer', 'fail'] as const
+export type AgentExhaustionMode = (typeof AGENT_EXHAUSTION_MODES)[number]
+
+/**
+ * D39: a tool loop's limits, every one counted across ALL attempts of the run — the turns and
+ * the active time ride the checkpoint, the tool calls and the failures are read back out of the
+ * transcript — so a retried step never gets a fresh allowance. Time spent parked on a person is
+ * not active time.
+ *
+ * `onExhaustion` decides what running out means. `'final-answer'` (the default) makes ONE forced
+ * call to the loop's terminal tool over the transcript so far — the salvage `research-topic` used
+ * to carry by hand — and fails the run when that call fails. `'fail'` fails the run straight away.
+ */
+export const agentPolicySchema = z.object({
+  /** Model turns. Clamped to `AGENT_MAX_TURNS`. */
+  maxTurns: z.number().int().positive().optional(),
+  /** Tool calls executed (the terminal tool's call is the answer, not one of these). */
+  maxToolCalls: z.number().int().positive().optional(),
+  /** Seconds of active loop time. */
+  maxDurationSeconds: z.number().positive().optional(),
+  /** Consecutive tool calls that came back as errors. A success resets the count. */
+  repeatedFailureLimit: z.number().int().positive().optional(),
+  onExhaustion: z.enum(AGENT_EXHAUSTION_MODES).optional(),
+})
+export type AgentPolicy = z.infer<typeof agentPolicySchema>
 
 /** `GET /api/agents` item — the meta without its zod schemas (not serialisable). */
 export const agentInfoSchema = z.object({
@@ -92,6 +125,8 @@ export const agentInfoSchema = z.object({
   promptKey: promptKeySchema,
   exclusive: z.boolean(),
   approvers: agentApproversSchema.default('requester'),
+  /** D39: the agent's tool-loop policy, when it declares one — the Agents page shows it. */
+  policy: agentPolicySchema.optional(),
   /**
    * The agent's `inputSchema` as JSON Schema, produced server-side by `toolInputSchema()`
    * (`services/ai/kit.ts`). Three reasons it is this and not zod: the conversion already exists;

@@ -30,9 +30,10 @@ import { z } from 'zod'
 import { listInterrupts } from '@/api/services/agents/interrupts'
 import { AGENTS, type AgentContext, type AnyAgentDefinition } from '@/api/services/agents/registry'
 import { replayRun } from '@/api/services/agents/replay'
-import { enqueueRun, getRun, listEvents } from '@/api/services/agents/runs'
+import { enqueueRun, getRun, listEvents, requestCancel } from '@/api/services/agents/runs'
 import { claimStep, executeRun } from '@/api/services/agents/runtime'
 import { AiError } from '@/api/services/ai/errors'
+import { runToolLoop, type Tool } from '@/api/services/ai/kit'
 import type { ChatClient } from '@/api/services/ai/types'
 import type { Logger } from '@/api/utils/core/logger'
 import { loadConfig } from '@/config'
@@ -708,5 +709,108 @@ describe('usage per run and budgets', () => {
       .from(aiUsage)
       .where(and(eq(aiUsage.tenantId, tenant.id), eq(aiUsage.agentRunId, params.runId)))
     expect(spent).toHaveLength(1)
+  })
+})
+
+// ---- policy (issue #1) and usage per turn (issue #2) -------------------------------------------
+
+describe('policy and per-turn usage', () => {
+  const lookup = {
+    name: 'lookup',
+    description: 'Look something up',
+    schema: z.object({ q: z.string() }),
+    handler: async ({ q }: { q: string }) => `found ${q}`,
+  } as Tool<{ q: string }>
+  const submit: Tool<{ answer: string }> = {
+    name: 'submit',
+    description: 'Submit the answer',
+    schema: z.object({ answer: z.string() }),
+  }
+  const loopAgent = (policy: NonNullable<AnyAgentDefinition['meta']['policy']>) =>
+    installAgent(
+      async ctx => {
+        const loop = await runToolLoop(ctx.chat.client, {
+          model: ctx.chat.model,
+          system: 'sys',
+          messages: [{ role: 'user', content: 'go' }],
+          tools: [lookup as Tool, submit as Tool],
+          maxTurns: ctx.cfg.AGENT_MAX_TURNS,
+          policy,
+          onStep: () => ctx.checkCancelled(),
+        })
+        return { ...(loop.terminalInput as object), salvaged: loop.salvaged ?? false }
+      },
+      { policy }
+    )
+
+  it("onExhaustion 'fail' settles the run failed with agent_policy_exhausted, never retried", async () => {
+    const env = createTestEnv()
+    const { user, tenant } = await createTestTenantWithUser(db, 'member')
+    state.client = new FakeChatClient([{ text: 'no tools for me' }], 'anthropic')
+    loopAgent({ onExhaustion: 'fail' })
+    const params = await enqueueAndClaim(env, tenant.id, user.id)
+    const outcome = await execute(env, params)
+    expect(outcome.status).toBe('failed')
+    const events = await listEvents(db, tenant.id, params.runId)
+    expect(events.find(e => e.type === 'error')?.data).toMatchObject({
+      code: 'agent_policy_exhausted',
+      willRetry: false,
+      details: { reason: 'no_tool_call', turns: 1 },
+    })
+  })
+
+  it("onExhaustion 'final-answer' succeeds with the salvaged answer, and the salvage is metered", async () => {
+    const env = createTestEnv()
+    const { user, tenant } = await createTestTenantWithUser(db, 'member')
+    state.client = new FakeChatClient(
+      [
+        {
+          toolUses: [{ name: 'lookup', input: { q: 'a' } }],
+          usage: { inputTokens: 10, outputTokens: 1 },
+        },
+        {
+          toolUses: [{ name: 'submit', input: { answer: 'salvaged' } }],
+          usage: { inputTokens: 20, outputTokens: 2 },
+        },
+      ],
+      'anthropic'
+    )
+    loopAgent({ maxTurns: 1 })
+    const params = await enqueueAndClaim(env, tenant.id, user.id)
+    expect((await execute(env, params)).status).toBe('succeeded')
+    const run = await getRun(db, tenant.id, params.runId)
+    expect(run?.output).toEqual({ answer: 'salvaged', salvaged: true })
+    const rows = await db.query.aiUsage.findMany({ where: eq(aiUsage.agentRunId, params.runId) })
+    expect(rows.map(r => r.inputTokens).sort()).toEqual([10, 20])
+  })
+
+  it('a run cancelled mid-loop keeps a usage row for every turn it paid for (issue #2)', async () => {
+    const env = createTestEnv()
+    const { user, tenant } = await createTestTenantWithUser(db, 'member')
+    const turn = {
+      toolUses: [{ name: 'lookup', input: { q: 'x' } }],
+      usage: { inputTokens: 7, outputTokens: 1 },
+    }
+    state.client = new FakeChatClient([turn, turn, turn, turn], 'anthropic')
+    let turns = 0
+    installAgent(async ctx => {
+      await runToolLoop(ctx.chat.client, {
+        model: ctx.chat.model,
+        system: 'sys',
+        messages: [{ role: 'user', content: 'go' }],
+        tools: [lookup as Tool, submit as Tool],
+        maxTurns: 10,
+        onStep: async () => {
+          turns += 1
+          if (turns === 2) await requestCancel(db, tenant.id, ctx.runId)
+          await ctx.checkCancelled()
+        },
+      })
+      return {}
+    })
+    const params = await enqueueAndClaim(env, tenant.id, user.id)
+    expect((await execute(env, params)).status).toBe('cancelled')
+    const rows = await db.query.aiUsage.findMany({ where: eq(aiUsage.agentRunId, params.runId) })
+    expect(rows).toHaveLength(2)
   })
 })

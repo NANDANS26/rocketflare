@@ -29,6 +29,7 @@
 import type { AgentRunStatus } from '@rocketflare/shared/ai/agents'
 import type { AgentSteeringNote } from '@rocketflare/shared/ai/interrupts'
 import { rejectionFor, steeringNoteDataSchema } from '@rocketflare/shared/ai/interrupts'
+import { ERROR_CODES } from '@rocketflare/shared/errors'
 import { and, asc, eq, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
@@ -45,6 +46,7 @@ import {
   InterruptRequested,
   StructuredOutputError,
   type ToolApproval,
+  ToolLoopExhaustedError,
 } from '../ai/kit'
 import { DECISIONS_FALLBACK_PROMPT_KEY, resolveChat, resolveDecisions } from '../ai/resolve'
 import type { AiEnv } from '../ai/types'
@@ -161,6 +163,8 @@ export function isRetryableRunError(err: unknown): boolean {
   if (err instanceof StructuredOutputError || err instanceof AgentCancelledError) return false
   // A budget is spent, not unavailable: a retry would only spend more (D39).
   if (err instanceof AgentBudgetExceededError) return false
+  // A policy that ran out would run out again: the retry resumes the same transcript.
+  if (err instanceof ToolLoopExhaustedError) return false
   // Neither interrupt type is a fault, and retrying either one re-asks a person who has already
   // been asked — or, worse, one who has already said no. They are handled by their own catch arms
   // above this classification; answering `true` here would let a step retry overtake them.
@@ -516,6 +520,22 @@ export async function executeRun(
           willRetry: false,
           code: err.code,
           details: { limit: err.limit, used: err.used, max: err.max },
+        },
+      })
+      await emit({ type: 'status', data: { status: 'failed' } })
+      return { runId, status: 'failed', error: err.message }
+    }
+    if (err instanceof ToolLoopExhaustedError) {
+      // The same shape as a budget: a reason a person can act on (loosen the policy), not a fault.
+      await failRun(db, tenantId, runId, err.message)
+      await emit({
+        type: 'error',
+        data: {
+          message: err.message,
+          attempt: run.attempt,
+          willRetry: false,
+          code: ERROR_CODES.agentPolicyExhausted,
+          details: { reason: err.reason, turns: err.turns },
         },
       })
       await emit({ type: 'status', data: { status: 'failed' } })
