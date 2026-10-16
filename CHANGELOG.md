@@ -6,6 +6,11 @@ copy of the kit forward without recreating anything its owner deleted.
 
 If you are running a copy: `pnpm kit:upgrade` tells you which of these you are missing.
 
+## 0.21.0 — 2026-10-16
+
+Agents can run many at once, in batches and fan-outs, with a usage row per call, budgets and tool-loop policies; plugin agents can ask questions; and `pnpm web agent:replay` re-runs past runs with today's code.
+[Porting note](docs/upgrades/0.21.0.md).
+
 ## 0.20.0 — 2026-10-13
 
 The AI adapters now follow each model's own rules, so Claude 5.x and GPT-6 models work. The `openai` provider moves to the Responses API, the defaults become `claude-haiku-5-5` and `gpt-6-luna`, and stale prices are corrected.
