@@ -73,6 +73,11 @@ export interface AgentInterruptAnswer {
   resolvedByUserId: string | null
 }
 
+/** How a replay (D38) treats one `ctx.once` — see {@link AgentContext.once}. */
+export interface OnceOptions {
+  replay?: 'serve' | 'rerun'
+}
+
 /** What `run()` receives. Never carries a client-supplied tenant id. */
 export interface AgentContext<Input = unknown> {
   db: Database
@@ -115,8 +120,13 @@ export interface AgentContext<Input = unknown> {
    * ingest, a ledger write, an outbound call — because an `execute` retry re-enters `run()` from the
    * top. `key` is yours and must be stable across attempts. The result is stored as jsonb: return
    * ids and scalars, not rows. At-least-once with a recorded result, not exactly-once.
+   *
+   * `options.replay` matters only to a REPLAY of the run (D38, `agent:replay`), never to the run
+   * itself: `'rerun'` marks `fn` as a pure model call a live replay may make again — so a changed
+   * prompt shows up as a changed answer — where the default `'serve'` hands back the recording,
+   * because `fn` may have a side effect.
    */
-  once<T>(key: string, fn: () => Promise<T>): Promise<T>
+  once<T>(key: string, fn: () => Promise<T>, options?: OnceOptions): Promise<T>
   /**
    * Ask a person, and suspend the run until they answer (issue #17).
    *

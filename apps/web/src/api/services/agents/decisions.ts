@@ -130,7 +130,7 @@ export function createDecide(deps: DecideDeps): AgentDecide {
     return resolved
   }
 
-  const decide = (async (key: string, request: DecisionRequest): Promise<Decision> => {
+  return decideWithShapes(async (key: string, request: DecisionRequest): Promise<Decision> => {
     const parsed = decisionRequestSchema.parse(request)
     const hash = await questionsHash(parsed.questions)
     const questions = Object.keys(parsed.questions).length
@@ -204,7 +204,18 @@ export function createDecide(deps: DecideDeps): AgentDecide {
         attributes: { 'rocketflare.decision.min_confidence': minConfidence(decision.answers) },
       })
     )
-  }) as AgentDecide
+  })
+}
+
+/**
+ * `sift` and `pick` on top of any raw decide — the runtime's, or replay's (D38), which serves
+ * recorded answers. One implementation of the shapes is what lets a replay rebuild the SAME
+ * request, and so the same `questions_hash`, that the run asked.
+ */
+export function decideWithShapes(
+  raw: (key: string, request: DecisionRequest) => Promise<Decision>
+): AgentDecide {
+  const decide = raw as AgentDecide
 
   decide.sift = async <T>(key: string, options: SiftOptions<T>): Promise<SiftResult<T>> => {
     const request = siftRequest(options)
@@ -374,7 +385,7 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value)
 }
 
-function toDecision(row: AgentRunDecisionRow, replayed: boolean): Decision {
+export function toDecision(row: AgentRunDecisionRow, replayed: boolean): Decision {
   return {
     decisionId: row.id,
     answers: row.answers,

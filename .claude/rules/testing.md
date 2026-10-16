@@ -102,7 +102,10 @@ tests), and put the claim about THIS checkout in `kit-only`.
   the proxy, 12 on a real Neon branch. `TEST_LATENCY_FACTOR` raises it (never lowers it) on a slow
   machine — a coding sandbox running a test by hand; anything but a positive number throws. No test carries a numeric budget of its own: a test that is slow only on a slow link is
   walking to a limit query by query, so it LOWERS that limit — `runStreamBody`'s injectable
-  `maxMs`, `AgentRunWorkflow.maxInterruptRounds` — and asserts the behaviour at it
+  `maxMs`, `AgentRunWorkflow.maxInterruptRounds` — and asserts the behaviour at it. The one
+  project-level exception is `config` and `kit-only` (`PROCESS_TEST_TIMEOUT`, 20 s × the factor):
+  they drive the kit's tooling end to end through child processes, which slow with CPU load, not
+  with a database link
 - Per-file `apps/web/tests/api-setup.ts` closes clients after each file (connection budget: forks × pools)
 - **Both drivers (D35), one seam.** `.env.test` sets `DATABASE_DRIVER=postgres`, so the narrow
   scripts and the suite run postgres.js; `pnpm test` then runs the `driver` project under `neon`

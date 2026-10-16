@@ -175,31 +175,38 @@ async function answer(
   screen: Screen
 ): Promise<TriageResearchOutput> {
   await ctx.step('answer', 'Writing the answer', 'running')
-  const result = await ctx.once('triage:answer', async () => {
-    const context = screen.kept
-      .map(p => `<passage documentId="${p.documentId}" title="${p.title}">\n${p.text}\n</passage>`)
-      .join('\n\n')
-    return callStructuredTool(ctx.chat.client, {
-      model: ctx.chat.model,
-      maxTokens: Math.min(ctx.chat.maxOutputTokens, ANSWER_MAX_TOKENS),
-      system: await ctx.prompt(),
-      messages: [{ role: 'user', content: `${context}\n\nQuestion: ${question}` }],
-      tool: {
-        name: SUBMIT_TRIAGE_ANSWER_TOOL,
-        description: 'Submit the answer and the documents it used. Call exactly once.',
-        schema: answerSchema,
-      },
-      onUsage: usage =>
-        void recordUsage(ctx.db, {
-          tenantId: ctx.tenantId,
-          userId: ctx.userId,
-          feature: 'agent:triage-research',
-          provider: ctx.chat.client.provider,
-          model: ctx.chat.model,
-          usage,
-        }).catch(err => ctx.logger.warn({ err }, 'triage-research: usage write failed')),
-    })
-  })
+  // `rerun`: a pure model call, so a live replay (D38) asks again and a prompt change shows.
+  const result = await ctx.once(
+    'triage:answer',
+    async () => {
+      const context = screen.kept
+        .map(
+          p => `<passage documentId="${p.documentId}" title="${p.title}">\n${p.text}\n</passage>`
+        )
+        .join('\n\n')
+      return callStructuredTool(ctx.chat.client, {
+        model: ctx.chat.model,
+        maxTokens: Math.min(ctx.chat.maxOutputTokens, ANSWER_MAX_TOKENS),
+        system: await ctx.prompt(),
+        messages: [{ role: 'user', content: `${context}\n\nQuestion: ${question}` }],
+        tool: {
+          name: SUBMIT_TRIAGE_ANSWER_TOOL,
+          description: 'Submit the answer and the documents it used. Call exactly once.',
+          schema: answerSchema,
+        },
+        onUsage: usage =>
+          void recordUsage(ctx.db, {
+            tenantId: ctx.tenantId,
+            userId: ctx.userId,
+            feature: 'agent:triage-research',
+            provider: ctx.chat.client.provider,
+            model: ctx.chat.model,
+            usage,
+          }).catch(err => ctx.logger.warn({ err }, 'triage-research: usage write failed')),
+      })
+    },
+    { replay: 'rerun' }
+  )
   // Citations only from what the screen kept — a model-supplied id outside it is dropped.
   const titles = new Map(screen.kept.map(p => [p.documentId, p.title]))
   const citations = [...new Set(result.documentIds)]
