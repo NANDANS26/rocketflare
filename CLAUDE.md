@@ -9,7 +9,7 @@ Cloudflare Worker (`apps/web`), a CLI (`apps/cli`), private zod contracts
 > **Setup**: asked for setup help → run `/rf-setup` (it drives `scripts/bootstrap.sh --no-dev`, then
 > starts the server): show each `✔ n/10` line, stop on failure. By hand: `SETUP.md` Part 1.
 > **Fresh copy?** `/rf-adapt <slug>`, then `docs/ADAPTING.md`. `/rf-setup`, `/rf-adapt`, `/rf-preflight`,
-> `/rf-traces`, `/rf-evals` and `/rf-plugin` you
+> `/rf-traces`, `/rf-evals`, `/rf-agent-replay` and `/rf-plugin` you
 > may run yourself; **`/rf-provision` is user-invoked only** (it creates paid resources and prompts for
 > tokens on a TTY) — asked to deploy, tell the user to run `/rf-provision`.
 > **Plugins** (D31, `docs/CONCEPTS.md` §16): a plugin is a git repository copied in, wired through six
@@ -67,6 +67,7 @@ pnpm test  # every package; starts the test DB + Neon proxy; suite under postgre
 TEST_DATABASE_BRANCH=gate-… pnpm test  # a sandbox gate: no Docker, the whole suite on a Neon gate branch (CONCEPTS §4)
 pnpm dev:db:up --neon|--postgres  # D35: local dev on either driver
 pnpm eval [suite] [--model x] [--compare] · pnpm eval:baseline · pnpm eval:view  # real-model evals (D33, docs/EVALS.md)
+pnpm web agent:replay <agent> --tenant <slug> [--candidate f] [--live]  # D38: today's agent code over past runs, read-only
 pnpm lint · pnpm typecheck · pnpm build  # workspace-wide
 pnpm web <script>  # any apps/web script (test:api, db:check…)
 pnpm db:generate · pnpm db:studio · pnpm deploy[:staging] · pnpm provision all  # (or one phase: --help)
@@ -113,7 +114,8 @@ docs/upgrades/     one porting note per kit release (+ unreleased.md) — CHANGE
                    rf-how-do-i (+ example-orders.md) · rf-upgrade (+ porting.md — port later kit releases) ·
                    rf-plugin (+ reference.md — install/upgrade/remove a plugin, D31) ·
                    rf-traces (debug a run from its span tree; pick a tracing backend, D32) ·
-                   rf-evals (+ reference.md — author, run, compare, harvest, baseline, improve; D33)
+                   rf-evals (+ reference.md — author, run, compare, harvest, baseline, improve; D33) ·
+                   rf-agent-replay (replay an agent's past runs with today's code, no model calls; D38)
 ```
 
 **`packages/shared`.** Private, no build: `@rocketflare/shared/<module>` → `./src/<module>.ts` (incl. `ai/*`,
@@ -125,7 +127,7 @@ written justification, and `apps/web/tests/config/shared-imports.test.ts` enforc
 **`apps/cli`.** `login` opens `GET /auth/cli?redirect_uri=http://127.0.0.1:<port>/callback`; the server
 mints a tenant API key `cli:<host>` → `?key=&tenant_id=&tenant_name=`; stored `0600` in
 `~/.rocketflare/config.json` (`ROCKETFLARE_API_KEY`/`ROCKETFLARE_URL` for CI). Also `logout|whoami|status|config`,
-`members|keys|activity list --json` (`.claude/rules/cli.md`)
+`members|keys|activity list --json`, `agents run <key> --input|--batch` (D39) (`.claude/rules/cli.md`)
 
 ## Config model
 
@@ -134,6 +136,8 @@ mints a tenant API key `cli:<host>` → `?key=&tenant_id=&tenant_name=`; stored 
 `SIGNUP_MODE` (`open|invite_only|approval`; `BOOTSTRAP_ADMIN_EMAILS` seeds the first admin) ·
 `TENANT_SCOPE_MODE` (`off|enforce`, `docs/RLS.md`) · `DATABASE_DRIVER` (`neon|postgres`, D35; missing =
 `postgres`, `neon` needs the `DATABASE_URL` secret; `.dev.vars` overrides locally, with `NEON_LOCAL_PROXY`) · `AGENT_MAX_OUTPUT_TOKENS` · `AGENT_MAX_TURNS` ·
+`AGENT_MAX_ACTIVE_RUNS_PER_TENANT` (50; 429 above) · `AGENT_RUN_MAX_TOKENS` / `AGENT_RUN_MAX_COST_USD` /
+`AGENT_TENANT_DAILY_COST_USD` (D39 budgets, unset = no cap; `meta.budget` overrides per agent) ·
 `CHAT_KNOWLEDGE_TOOLS` (`true|false` — chat may call the knowledge tools) ·
 `CHAT_HISTORY_MAX_CHARS` (history a turn replays; older turns are summarised by `chat.compact`) ·
 `FEATURES_ENABLED` (D30 — comma-separated feature keys this deployment ships at all; fail-closed,

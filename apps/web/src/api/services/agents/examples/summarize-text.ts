@@ -1,8 +1,8 @@
 /**
  * `summarize-text` — the kit's ONE example agent (D7, D17, 09 (c)), shaped like the simplest real
  * definition: exclusive per tenant, a precheck, ONE terminal tool (`submit_summary`) forced through
- * `callStructuredTool`, output persisted by the runtime, usage recorded under
- * `feature: 'agent:summarize-text'`. Emits `step` / `tool.start` / `tool.end` / `text` events and
+ * `callStructuredTool`, output persisted by the runtime, usage ledgered by the runtime's meter under
+ * `feature: 'agent:summarize-text'` (D39 — the agent writes no usage row itself). Emits `step` / `tool.start` / `tool.end` / `text` events and
  * polls for cancellation before and after the model call. With `input.index: true` it also stores
  * the summary as a searchable document through `ingestText` — the reason retrieval is never dead
  * code (00 §1.3) — wrapped in `ctx.once` so a retried attempt replays the recorded document instead
@@ -31,7 +31,6 @@ import { approvalPayloadSchema } from '@rocketflare/shared/ai/interrupts'
 import { z } from 'zod'
 import { ingestText } from '../../ai/ingest'
 import { callStructuredTool } from '../../ai/kit'
-import { recordUsage } from '../../ai/usage'
 import type { AgentDefinition } from '../registry'
 
 export const SUBMIT_SUMMARY_TOOL = 'submit_summary'
@@ -91,15 +90,6 @@ export const summarizeTextAgent: AgentDefinition<SummarizeTextInput, SummarizeTe
           description: 'Submit the summary and its key points. Call exactly once.',
           schema: submitSummarySchema,
         },
-        onUsage: usage =>
-          void recordUsage(ctx.db, {
-            tenantId: ctx.tenantId,
-            userId: ctx.userId,
-            feature: 'agent:summarize-text',
-            provider: ctx.chat.client.provider,
-            model: ctx.chat.model,
-            usage,
-          }).catch(err => ctx.logger.warn({ err }, 'summarize-text: usage write failed')),
       })
       await ctx.emit({
         type: 'tool.end',

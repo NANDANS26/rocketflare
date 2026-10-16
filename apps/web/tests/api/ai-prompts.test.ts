@@ -5,7 +5,7 @@
  */
 import { promptListResponseSchema, promptWithResolvedSchema } from '@rocketflare/shared/ai/prompts'
 import { describe, expect, it } from 'vitest'
-import { PROMPT_REGISTRY, resolvePrompt } from '@/api/services/prompts'
+import { CORE_PROMPT_REGISTRY, PROMPT_REGISTRY, resolvePrompt } from '@/api/services/prompts'
 import {
   createTestSession,
   createTestTenantWithUser,
@@ -33,7 +33,9 @@ describe('/api/ai/prompts', () => {
     let list = promptListResponseSchema.parse(
       await json(await request('/api/ai/prompts', { headers: a.cookie }))
     )
-    expect(list.items.map(i => i.definition.key)).toEqual([
+    // The kit's own prompts, in order; an installed plugin's follow them (D31).
+    const core: readonly string[] = Object.keys(CORE_PROMPT_REGISTRY)
+    expect(list.items.map(i => i.definition.key).filter(key => core.includes(key))).toEqual([
       'chat',
       'summarize-text',
       'chat-compaction',

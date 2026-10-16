@@ -10,6 +10,7 @@
 import {
   agentListResponseSchema,
   agentRunWithEventsSchema,
+  CORE_AGENT_KEYS,
   createAgentRunResponseSchema,
 } from '@rocketflare/shared/ai/agents'
 import { eq } from 'drizzle-orm'
@@ -63,7 +64,9 @@ describe('GET /api/agents', () => {
     const body = agentListResponseSchema.parse(
       await json(await request('/api/agents', { headers: a.cookie }))
     )
-    expect(body.items).toEqual([
+    // The kit's own agents, in order; an installed plugin's agents follow them (D31).
+    const core: readonly string[] = CORE_AGENT_KEYS
+    expect(body.items.filter(item => core.includes(item.key))).toEqual([
       expect.objectContaining({
         key: 'summarize-text',
         promptKey: 'summarize-text',
@@ -79,7 +82,7 @@ describe('GET /api/agents', () => {
       expect.objectContaining({
         key: 'triage-research',
         promptKey: 'triage-research',
-        exclusive: true,
+        exclusive: false,
         title: expect.any(String),
       }),
     ])

@@ -136,7 +136,7 @@ export function priceFor(provider: AiProvider, model: string): ModelPrice | null
 }
 
 /** Microcents (1/1 000 000 of a cent) per USD — the `ai_usage.cost_microcents` unit. */
-const MICROCENTS_PER_USD = 100_000_000
+export const MICROCENTS_PER_USD = 100_000_000
 const PER_TOKEN = 1_000_000
 
 /**

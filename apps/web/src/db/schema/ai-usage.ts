@@ -1,11 +1,12 @@
 /**
  * `ai_usage` — one row per model generation (D18): who spent what, on which provider/model, for
  * which feature. Written by `services/ai/usage.ts` from the provider's usage tap (chat route,
- * agent runs, connection tests). Append-only, no `updated_at`. `costMicrocents` stays null until an
+ * agent runs — ONE row per model call or decision, carrying `agent_run_id` (D39) —, connection
+ * tests). Append-only, no `updated_at`. `costMicrocents` stays null until an
  * app supplies a pricing table — cheap to record now, impossible to backfill later.
  */
 import type { AiProvider } from '@rocketflare/shared/ai/config'
-import { relations } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { bigint, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 import { tenantRef } from './_helpers'
 import { agentRuns } from './agent-runs'
@@ -39,6 +40,10 @@ export const aiUsage = pgTable(
   },
   table => [
     index('ai_usage_tenant_at_idx').on(table.tenantId, table.at.desc()),
+    // D39: a run's spend so far — read before every metered call to enforce its budget.
+    index('ai_usage_tenant_run_idx')
+      .on(table.tenantId, table.agentRunId)
+      .where(sql`${table.agentRunId} IS NOT NULL`),
     tenantIsolation('ai_usage'),
   ]
 )

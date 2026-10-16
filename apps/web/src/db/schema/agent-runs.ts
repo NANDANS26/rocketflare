@@ -3,9 +3,12 @@
  * A row is inserted `queued` BEFORE the Workflow instance is created (id = run id); the `claim`
  * step flips it to `running` with `UPDATE … WHERE status IN ('queued','running') RETURNING` — the
  * row IS the idempotency gate, so a retried step re-claims and a settled row is a no-op.
- * `agent_runs_active_exclusive_idx` (partial unique on `(tenant_id, agent_key)` while active) is
- * the **exclusive** guarantee: a second enqueue while one is queued/running fails at the database,
- * never in memory. `cancelRequestedAt` is the cooperative cancel flag the run polls between turns.
+ * `agent_runs_active_exclusive_idx` (partial unique on `(tenant_id, agent_key, concurrency_key)`
+ * while active, for rows WITH a key) is the **exclusive** guarantee: a second enqueue into the same
+ * slot while one is queued/running fails at the database, never in memory. `concurrency_key` is
+ * the slot — `''` for an `exclusive` agent (one per tenant), a caller's key to narrow it (one
+ * active run per key), NULL for a non-exclusive run (no slot: any number may be active at once).
+ * `cancelRequestedAt` is the cooperative cancel flag the run polls between turns.
  * `input`/`output` are jsonb so a retry re-reads the payload from the row, not a message, and
  * `checkpoint` is where a retried step picks the tool loop back up instead of replaying it.
  */
@@ -80,19 +83,36 @@ export const agentRuns = pgTable(
      * step lands in one trace without carrying anything; stored so a reader need not know the rule.
      */
     traceId: text('trace_id'),
+    /**
+     * The exclusive SLOT this run holds while active, written by `enqueueRun` because a partial
+     * index can only read the row it indexes: `''` = the whole tenant (an `exclusive` agent),
+     * `<caller key>` = one active run per key, NULL = none (runs freely).
+     */
+    concurrencyKey: text('concurrency_key'),
+    /** D39: the `POST /runs/batch` call that created the row — `GET /runs?batchId=`. */
+    batchId: uuid('batch_id'),
     ...timestamps(),
   },
   table => [
     index('agent_runs_tenant_agent_status_idx').on(table.tenantId, table.agentKey, table.status),
     index('agent_runs_tenant_created_idx').on(table.tenantId, table.createdAt.desc()),
-    // The EXCLUSIVE guarantee (D7): at most one active run per (tenant, agent), by the database.
+    // The EXCLUSIVE guarantee (D7): at most one active run per (tenant, agent, slot), by the
+    // database. A row with no slot (NULL `concurrency_key`, a non-exclusive agent — one person's
+    // conversation, where two people at once is the normal case) is outside it.
     // The predicate is `ACTIVE_RUN_STATUSES`, which INCLUDES `awaiting_input`: a run parked on a
     // human is still *the* active run for that agent, and a narrower predicate would let a second
     // enqueue slip past the guarantee while the first waits for an answer. It is deliberately wider
     // than `CLAIMABLE_RUN_STATUSES`, which the claim step uses.
     uniqueIndex('agent_runs_active_exclusive_idx')
-      .on(table.tenantId, table.agentKey)
-      .where(sql`${table.status} IN (${sql.raw(ACTIVE_STATUS_LITERALS)})`),
+      .on(table.tenantId, table.agentKey, table.concurrencyKey)
+      .where(
+        sql`${table.status} IN (${sql.raw(ACTIVE_STATUS_LITERALS)}) AND ${table.concurrencyKey} IS NOT NULL`
+      ),
+    // D39: the per-tenant concurrency cap counts active rows on every enqueue.
+    index('agent_runs_tenant_status_idx').on(table.tenantId, table.status),
+    index('agent_runs_tenant_batch_idx')
+      .on(table.tenantId, table.batchId)
+      .where(sql`${table.batchId} IS NOT NULL`),
     tenantIsolation('agent_runs'),
   ]
 )

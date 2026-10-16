@@ -17,6 +17,7 @@ import {
 } from '@rocketflare/shared/ai/config'
 import { describe, expect, it } from 'vitest'
 import { resolveChat } from '@/api/services/ai/resolve'
+import { CORE_PROMPT_REGISTRY } from '@/api/services/prompts'
 import { loadConfig } from '@/config'
 import {
   createTestSession,
@@ -69,7 +70,14 @@ describe('/api/ai/agent-models', () => {
     expect(first.isDefault).toBe(true)
 
     let items = (await list(a.cookie)).items
-    expect(items.map(i => i.promptKey).sort()).toEqual([
+    // The kit's own prompt keys; an installed plugin's are listed too (D31).
+    const core: readonly string[] = Object.keys(CORE_PROMPT_REGISTRY)
+    expect(
+      items
+        .map(i => i.promptKey)
+        .filter(key => core.includes(key))
+        .sort()
+    ).toEqual([
       'agent-decide',
       'chat',
       'chat-compaction',

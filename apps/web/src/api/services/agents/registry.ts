@@ -25,10 +25,12 @@ import { type Tool, type ToolApproval, type ToolLoopCheckpoint, toolInputSchema 
 import type { AiEnv, ChatClient } from '../ai/types'
 import type { JobsQueue } from '../jobs'
 import type { RegistryPromptKey } from '../prompts'
+import type { MeteredCall } from './budget'
 import type { AgentDecide } from './decisions'
 import { researchTopicAgent } from './examples/research-topic'
 import { summarizeTextAgent } from './examples/summarize-text'
 import { triageResearchAgent } from './examples/triage-research'
+import type { MapOptions } from './fanout'
 
 /** Emitted by the run into `agent_run_events` (and nudged to viewers). */
 export interface AgentEvent {
@@ -73,6 +75,16 @@ export interface AgentInterruptAnswer {
   resolvedByUserId: string | null
 }
 
+/** How a replay (D38) treats one `ctx.once` — see {@link AgentContext.once}. */
+export interface OnceOptions {
+  /**
+   * `'serve'` (default) — hand back the recording; `'rerun'` — a live replay calls `fn` again (a
+   * pure model call); `'inner'` — every replay calls `fn` again and serves what is recorded INSIDE
+   * it. `'inner'` is for a `once` that only memoises other recorded calls — `ctx.map`'s items.
+   */
+  replay?: 'serve' | 'rerun' | 'inner'
+}
+
 /** What `run()` receives. Never carries a client-supplied tenant id. */
 export interface AgentContext<Input = unknown> {
   db: Database
@@ -115,8 +127,13 @@ export interface AgentContext<Input = unknown> {
    * ingest, a ledger write, an outbound call — because an `execute` retry re-enters `run()` from the
    * top. `key` is yours and must be stable across attempts. The result is stored as jsonb: return
    * ids and scalars, not rows. At-least-once with a recorded result, not exactly-once.
+   *
+   * `options.replay` matters only to a REPLAY of the run (D38, `agent:replay`), never to the run
+   * itself: `'rerun'` marks `fn` as a pure model call a live replay may make again — so a changed
+   * prompt shows up as a changed answer — where the default `'serve'` hands back the recording,
+   * because `fn` may have a side effect.
    */
-  once<T>(key: string, fn: () => Promise<T>): Promise<T>
+  once<T>(key: string, fn: () => Promise<T>, options?: OnceOptions): Promise<T>
   /**
    * Ask a person, and suspend the run until they answer (issue #17).
    *
@@ -182,6 +199,31 @@ export interface AgentContext<Input = unknown> {
     status: 'running' | 'done' | 'error',
     detail?: string
   ): Promise<void>
+  /**
+   * This context with every keyed primitive — `once`, `decide`, `interrupt`, `artifact`, `step` —
+   * namespaced under `prefix` (D39), so the same code can run for many items without their keys
+   * colliding. Scopes nest. A scope has no checkpoint (a tool loop inside one restarts on a retry).
+   */
+  scope(prefix: string): AgentContext<Input>
+  /**
+   * Run `fn` over `items`, a few at a time (D39, `fanout.ts`): each item is a `once` keyed
+   * `key[index]` (or `key[keyOf(item)]`) and gets its own `scope`, so a retried step replays the
+   * items that finished and runs only the rest. Concurrency is `min(options.concurrency ?? 4, 6)`.
+   * The first error stops scheduling; asks from several items become ONE park. `fn`'s result is
+   * stored as jsonb — return ids and scalars. Freeze the item list (`once`) before mapping it.
+   */
+  map<T, R>(
+    key: string,
+    items: readonly T[],
+    fn: (item: T, ctx: AgentContext<Input>) => Promise<R>,
+    options?: MapOptions<T>
+  ): Promise<R[]>
+  /**
+   * Ledger a model call that did NOT go through `ctx.chat.client` or `ctx.decide` — a client of
+   * the agent's own (D39). One `ai_usage` row carrying this run's id, counted toward its budget.
+   * Calls through `ctx.chat.client` and `ctx.decide` are metered already: never record those.
+   */
+  recordUsage(call: MeteredCall): Promise<void>
 }
 
 export interface AgentDefinition<Input = unknown, Output = unknown> {
@@ -242,6 +284,7 @@ export function listAgentInfo(): AgentInfo[] {
     promptKey: a.meta.promptKey,
     exclusive: a.meta.exclusive,
     approvers: a.meta.approvers ?? 'requester',
+    ...(a.meta.policy ? { policy: a.meta.policy } : {}),
     inputJsonSchema: toolInputSchema(a.meta.inputSchema),
   }))
   return agentInfoCache

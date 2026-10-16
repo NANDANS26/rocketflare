@@ -39,6 +39,12 @@ FEATURES_ENABLED=
 # retention the instance is gone and the resume event can never arrive, so keep this under 3 days
 # if you are not on Paid.
 AGENT_INTERRUPT_TIMEOUT=168 hours
+# Agent budgets (D39). Blank = no cap. Per run: tokens across every call and decision, and USD
+# across priced calls (an agent's `meta.budget` overrides both). Per tenant: USD per UTC day,
+# checked at enqueue (429 ai_budget_exceeded) and before every call of a running run.
+AGENT_RUN_MAX_TOKENS=
+AGENT_RUN_MAX_COST_USD=
+AGENT_TENANT_DAILY_COST_USD=
 
 # --- Optional (feature-gated when absent) -----------------------------------------------
 # Email via Resend. Absent → magic-link URLs are logged to the wrangler dev console.
