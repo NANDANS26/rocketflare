@@ -4,28 +4,30 @@ previous: 0.21.0
 date: null
 breaking: false
 migrations: []
-areas: []
-touches_surfaces: []
-requires_surfaces: []
+areas: [api, shared]
+touches_surfaces:
+  - feature-agents
+requires_surfaces: [feature-agents]
 manual: false
 ---
 
 ## What changed
 
-_Nothing yet. Add an entry here in the same pull request as the change. This first paragraph is
-lifted VERBATIM into `CHANGELOG.md`, so make it ONE standalone summary sentence of ≤ 40 words —
-then one bullet per change, one line each, and no `###` sub-headings. Rationale belongs in
-`docs/CONCEPTS.md` and is linked, never restated; see `README.md` beside this file._
+Independent tool calls in an agent's turn now execute concurrently with a configurable cap, preserving model-requested transcript order and existing execution policies.
+
+- `meta.policy` (`agentPolicySchema`) gains `maxConcurrentToolCalls` (default 4; cap 1 is sequential), executed concurrently by `runToolLoop` with events, transcript results and error handling preserved in model order (issue #4).
 
 ## How to apply
 
-_Numbered, imperative, each step self-contained — no "these", "them" or "the above" reaching
-outside its own step._
+1. Port `maxConcurrentToolCalls` in `packages/shared/src/ai/agents.ts` into `agentPolicySchema`.
+2. Port the concurrent tool execution logic in `apps/web/src/api/services/ai/kit.ts`'s `executeToolUses`.
+3. Optionally configure `maxConcurrentToolCalls` on an agent's `meta.policy` to tune concurrency, or set it to 1 to retain sequential tool execution.
 
 ## Conflicts to expect
 
-_One line each: `path → what changed → what to do`. Or exactly `None.`_
+- `apps/web/src/api/services/ai/kit.ts` → `executeToolUses` gained bounded concurrency → keep your custom tool execution logic inside the handler runner.
 
 ## Verify
 
-_Numbered checkable commands and assertions only._
+1. `pnpm -F @rocketflare/web exec vitest run --project config tests/config/agent-concurrent-tools.test.ts` passes.
+2. `pnpm -F @rocketflare/web exec tsc --noEmit` and `pnpm -F @rocketflare/shared exec tsc --noEmit` pass with zero errors.
