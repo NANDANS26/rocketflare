@@ -21,7 +21,7 @@ Independent tool calls in an agent's turn now execute concurrently with a config
 
 1. Port `maxConcurrentToolCalls` in `packages/shared/src/ai/agents.ts` into `agentPolicySchema`.
 2. Port the concurrent tool execution logic in `apps/web/src/api/services/ai/kit.ts`'s `executeToolUses`.
-3. Optionally configure `maxConcurrentToolCalls` on an agent's `meta.policy` to tune concurrency, or set it to 1 to retain sequential tool execution.
+3. For agents whose tools share state or depend on each other, configure `maxConcurrentToolCalls: 1` on `meta.policy` to retain sequential tool execution (concurrency defaults to 4).
 
 ## Conflicts to expect
 
@@ -29,5 +29,4 @@ Independent tool calls in an agent's turn now execute concurrently with a config
 
 ## Verify
 
-1. `pnpm -F @rocketflare/web exec vitest run --project config tests/config/agent-concurrent-tools.test.ts` passes.
-2. `pnpm -F @rocketflare/web exec tsc --noEmit` and `pnpm -F @rocketflare/shared exec tsc --noEmit` pass with zero errors.
+1. `pnpm gate` passes.

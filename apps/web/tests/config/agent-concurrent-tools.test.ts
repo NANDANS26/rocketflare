@@ -11,6 +11,16 @@ import { FakeChatClient } from '../helpers/ai'
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: any) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 const dummySchema = z.object({ id: z.string(), delayMs: z.number().optional() })
 const finalAnswerSchema = z.object({ answer: z.string() })
 
@@ -24,15 +34,20 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
   it('1. executes independent tool calls concurrently when cap > 1', async () => {
     let active = 0
     let maxActive = 0
+    const barrier = deferred()
+    const allStarted = deferred()
 
-    const testTool: Tool<{ id: string; delayMs?: number }> = {
+    const testTool: Tool<{ id: string }> = {
       name: 'async_worker',
       description: 'Worker tool',
       schema: dummySchema,
-      handler: async ({ id, delayMs = 30 }) => {
+      handler: async ({ id }) => {
         active += 1
         maxActive = Math.max(maxActive, active)
-        await delay(delayMs)
+        if (active === 3) {
+          allStarted.resolve()
+        }
+        await barrier.promise
         active -= 1
         return `done-${id}`
       },
@@ -41,9 +56,9 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
     const client = new FakeChatClient([
       {
         toolUses: [
-          { name: 'async_worker', input: { id: '1', delayMs: 40 } },
-          { name: 'async_worker', input: { id: '2', delayMs: 40 } },
-          { name: 'async_worker', input: { id: '3', delayMs: 40 } },
+          { name: 'async_worker', input: { id: '1' } },
+          { name: 'async_worker', input: { id: '2' } },
+          { name: 'async_worker', input: { id: '3' } },
         ],
       },
       {
@@ -51,7 +66,7 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       },
     ])
 
-    const res = await runToolLoop(client, {
+    const runPromise = runToolLoop(client, {
       model: 'test-model',
       system: 'test',
       messages: [{ role: 'user', content: 'run' }],
@@ -61,6 +76,11 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       },
     })
 
+    await allStarted.promise
+    expect(maxActive).toBe(3)
+    barrier.resolve()
+
+    const res = await runPromise
     expect(res.terminalTool).toBe('final_answer')
     expect(res.terminalInput).toEqual({ answer: 'All done' })
     expect(maxActive).toBe(3)
@@ -114,15 +134,17 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
   it('3. strictly preserves sequential execution when cap is 1', async () => {
     let active = 0
     let maxActive = 0
+    const gates = [deferred(), deferred(), deferred()]
 
-    const testTool: Tool<{ id: string; delayMs?: number }> = {
+    const testTool: Tool<{ id: string }> = {
       name: 'async_worker',
       description: 'Worker tool',
       schema: dummySchema,
-      handler: async ({ id, delayMs = 20 }) => {
+      handler: async ({ id }) => {
         active += 1
         maxActive = Math.max(maxActive, active)
-        await delay(delayMs)
+        const idx = Number(id) - 1
+        await gates[idx].promise
         active -= 1
         return `done-${id}`
       },
@@ -131,9 +153,9 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
     const client = new FakeChatClient([
       {
         toolUses: [
-          { name: 'async_worker', input: { id: '1', delayMs: 20 } },
-          { name: 'async_worker', input: { id: '2', delayMs: 20 } },
-          { name: 'async_worker', input: { id: '3', delayMs: 20 } },
+          { name: 'async_worker', input: { id: '1' } },
+          { name: 'async_worker', input: { id: '2' } },
+          { name: 'async_worker', input: { id: '3' } },
         ],
       },
       {
@@ -141,7 +163,7 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       },
     ])
 
-    const res = await runToolLoop(client, {
+    const runPromise = runToolLoop(client, {
       model: 'test-model',
       system: 'test',
       messages: [{ role: 'user', content: 'run' }],
@@ -151,6 +173,22 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       },
     })
 
+    await delay(15)
+    expect(active).toBe(1)
+    expect(maxActive).toBe(1)
+    gates[0].resolve()
+
+    await delay(15)
+    expect(active).toBe(1)
+    expect(maxActive).toBe(1)
+    gates[1].resolve()
+
+    await delay(15)
+    expect(active).toBe(1)
+    expect(maxActive).toBe(1)
+    gates[2].resolve()
+
+    const res = await runPromise
     expect(res.terminalTool).toBe('final_answer')
     expect(maxActive).toBe(1)
   })
@@ -246,13 +284,16 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
   it('6. strictly preserves model-requested order when tools complete out of order', async () => {
     const completionOrder: string[] = []
     const events: ToolLoopEvent[] = []
+    const slowGate = deferred()
 
-    const testTool: Tool<{ id: string; delayMs?: number }> = {
+    const testTool: Tool<{ id: string }> = {
       name: 'order_tool',
       description: 'Order test tool',
       schema: dummySchema,
-      handler: async ({ id, delayMs = 0 }) => {
-        await delay(delayMs)
+      handler: async ({ id }) => {
+        if (id === 'slow_first') {
+          await slowGate.promise
+        }
         completionOrder.push(id)
         return `result-${id}`
       },
@@ -261,9 +302,8 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
     const client = new FakeChatClient([
       {
         toolUses: [
-          // Tool 1 takes 50ms, Tool 2 takes 10ms (completes first)
-          { name: 'order_tool', input: { id: 'slow_first', delayMs: 50 } },
-          { name: 'order_tool', input: { id: 'fast_second', delayMs: 10 } },
+          { name: 'order_tool', input: { id: 'slow_first' } },
+          { name: 'order_tool', input: { id: 'fast_second' } },
         ],
       },
       {
@@ -271,7 +311,7 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       },
     ])
 
-    const res = await runToolLoop(client, {
+    const runPromise = runToolLoop(client, {
       model: 'test-model',
       system: 'test',
       messages: [{ role: 'user', content: 'run' }],
@@ -283,6 +323,12 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
         events.push(event)
       },
     })
+
+    await delay(20)
+    expect(completionOrder).toEqual(['fast_second'])
+    slowGate.resolve()
+
+    const res = await runPromise
 
     // Confirm that fast_second actually completed before slow_first
     expect(completionOrder).toEqual(['fast_second', 'slow_first'])
@@ -358,12 +404,13 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
 
   it('8. rethrows InterruptRequested from inside a handler and settles in-flight siblings cleanly', async () => {
     let siblingFinished = false
+    const siblingGate = deferred()
 
-    const testTool: Tool<{ id: string; delayMs?: number }> = {
+    const testTool: Tool<{ id: string }> = {
       name: 'interrupt_tool',
       description: 'Interrupt tool',
       schema: dummySchema,
-      handler: async ({ id, delayMs = 10 }) => {
+      handler: async ({ id }) => {
         if (id === 'interrupt_call') {
           throw new InterruptRequested([
             {
@@ -373,7 +420,7 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
             },
           ])
         }
-        await delay(delayMs)
+        await siblingGate.promise
         siblingFinished = true
         return 'sibling-done'
       },
@@ -383,28 +430,32 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       {
         toolUses: [
           { name: 'interrupt_tool', input: { id: 'interrupt_call' } },
-          { name: 'interrupt_tool', input: { id: 'sibling_call', delayMs: 20 } },
+          { name: 'interrupt_tool', input: { id: 'sibling_call' } },
         ],
       },
     ])
 
-    await expect(
-      runToolLoop(client, {
-        model: 'test-model',
-        system: 'test',
-        messages: [{ role: 'user', content: 'run' }],
-        tools: [testTool, finalAnswerTool],
-        policy: {
-          maxConcurrentToolCalls: 2,
-        },
-      })
-    ).rejects.toThrow(InterruptRequested)
+    const runPromise = runToolLoop(client, {
+      model: 'test-model',
+      system: 'test',
+      messages: [{ role: 'user', content: 'run' }],
+      tools: [testTool, finalAnswerTool],
+      policy: {
+        maxConcurrentToolCalls: 2,
+      },
+    })
 
+    await delay(20)
+    expect(siblingFinished).toBe(false)
+    siblingGate.resolve()
+
+    await expect(runPromise).rejects.toThrow(InterruptRequested)
     expect(siblingFinished).toBe(true)
   })
 
   it('9. bounds total tool calls with maxToolCalls during concurrent turn and answers all calls', async () => {
     let callsExecuted = 0
+    const gate = deferred()
 
     const testTool: Tool<{ id: string }> = {
       name: 'counter_tool',
@@ -412,6 +463,7 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       schema: dummySchema,
       handler: async ({ id }) => {
         callsExecuted += 1
+        await gate.promise
         return `done-${id}`
       },
     }
@@ -430,7 +482,7 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       },
     ])
 
-    const res = await runToolLoop(client, {
+    const runPromise = runToolLoop(client, {
       model: 'test-model',
       system: 'test',
       messages: [{ role: 'user', content: 'run' }],
@@ -441,6 +493,12 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
         onExhaustion: 'final-answer',
       },
     })
+
+    await delay(25)
+    expect(callsExecuted).toBe(2)
+    gate.resolve()
+
+    const res = await runPromise
 
     expect(res.stopReason).toBe('max_tool_calls')
     expect(res.salvaged).toBe(true)
@@ -548,5 +606,195 @@ describe('bounded concurrent tool execution in runToolLoop', () => {
       )
       expect((userTurn.content[1] as any).content).toBe('done-allowed')
     }
+  })
+
+  it('12. progressively emits tool_result events in model order as preceding results become ready', async () => {
+    const emittedResults: string[] = []
+    const gate1 = deferred()
+
+    const testTool: Tool<{ id: string }> = {
+      name: 'progressive_tool',
+      description: 'Progressive tool',
+      schema: dummySchema,
+      handler: async ({ id }) => {
+        if (id === 'call_0') {
+          return 'res_0'
+        }
+        if (id === 'call_1') {
+          await gate1.promise
+          return 'res_1'
+        }
+        if (id === 'call_2') {
+          return 'res_2'
+        }
+        return 'res_other'
+      },
+    }
+
+    const client = new FakeChatClient([
+      {
+        toolUses: [
+          { name: 'progressive_tool', input: { id: 'call_0' } },
+          { name: 'progressive_tool', input: { id: 'call_1' } },
+          { name: 'progressive_tool', input: { id: 'call_2' } },
+        ],
+      },
+      {
+        toolUses: [{ name: 'final_answer', input: { answer: 'Done' } }],
+      },
+    ])
+
+    const runPromise = runToolLoop(client, {
+      model: 'test-model',
+      system: 'test',
+      messages: [{ role: 'user', content: 'run' }],
+      tools: [testTool, finalAnswerTool],
+      policy: {
+        maxConcurrentToolCalls: 3,
+      },
+      onEvent: event => {
+        if (event.kind === 'tool_result' && event.name === 'progressive_tool') {
+          emittedResults.push(event.resultText)
+        }
+      },
+    })
+
+    // Give call_0 and call_2 time to complete
+    await delay(25)
+
+    // call_0 should have emitted immediately because it's first in order.
+    // call_2 finished, but CANNOT emit yet because call_1 is still pending!
+    expect(emittedResults).toEqual(['res_0'])
+
+    // Now release call_1
+    gate1.resolve()
+
+    const res = await runPromise
+    expect(res.terminalTool).toBe('final_answer')
+
+    // After call_1 finishes, both call_1 and call_2 are emitted in exact model order
+    expect(emittedResults).toEqual(['res_0', 'res_1', 'res_2'])
+  })
+
+  it('13. settles in-flight sibling on interrupt and does not claim subsequent tasks', async () => {
+    let call3Started = false
+    const siblingGate = deferred()
+    let siblingFinished = false
+
+    const testTool: Tool<{ id: string }> = {
+      name: 'worker_tool',
+      description: 'Worker tool',
+      schema: dummySchema,
+      handler: async ({ id }) => {
+        if (id === 'interrupt_call') {
+          throw new InterruptRequested([
+            {
+              key: 'test_interrupt',
+              toolCallId: 'call_1',
+              spec: { kind: 'approval', message: 'Approve?' },
+            },
+          ])
+        }
+        if (id === 'sibling_call') {
+          await siblingGate.promise
+          siblingFinished = true
+          return 'sibling_done'
+        }
+        if (id === 'queued_call') {
+          call3Started = true
+          return 'queued_done'
+        }
+        return 'done'
+      },
+    }
+
+    const client = new FakeChatClient([
+      {
+        toolUses: [
+          { name: 'worker_tool', input: { id: 'interrupt_call' } },
+          { name: 'worker_tool', input: { id: 'sibling_call' } },
+          { name: 'worker_tool', input: { id: 'queued_call' } },
+        ],
+      },
+    ])
+
+    const runPromise = runToolLoop(client, {
+      model: 'test-model',
+      system: 'test',
+      messages: [{ role: 'user', content: 'run' }],
+      tools: [testTool, finalAnswerTool],
+      policy: {
+        maxConcurrentToolCalls: 2, // only 2 workers for 3 tasks
+      },
+    })
+
+    await delay(25)
+    expect(call3Started).toBe(false)
+    expect(siblingFinished).toBe(false)
+
+    siblingGate.resolve()
+
+    await expect(runPromise).rejects.toThrow(InterruptRequested)
+    expect(siblingFinished).toBe(true)
+    expect(call3Started).toBe(false)
+  })
+
+  it('14. rethrows error in model-request order when multiple concurrent tools throw', async () => {
+    const gate0 = deferred()
+
+    const testTool: Tool<{ id: string }> = {
+      name: 'err_tool',
+      description: 'Error tool',
+      schema: dummySchema,
+      handler: async ({ id }) => {
+        if (id === 'first_slow') {
+          await gate0.promise
+          throw new InterruptRequested([
+            {
+              key: 'interrupt_first_slow',
+              toolCallId: 'call_1',
+              spec: { kind: 'approval', message: 'Approve 1?' },
+            },
+          ])
+        }
+        if (id === 'second_fast') {
+          throw new InterruptRequested([
+            {
+              key: 'interrupt_second_fast',
+              toolCallId: 'call_2',
+              spec: { kind: 'approval', message: 'Approve 2?' },
+            },
+          ])
+        }
+        return 'ok'
+      },
+    }
+
+    const client = new FakeChatClient([
+      {
+        toolUses: [
+          { name: 'err_tool', input: { id: 'first_slow' } },
+          { name: 'err_tool', input: { id: 'second_fast' } },
+        ],
+      },
+    ])
+
+    const runPromise = runToolLoop(client, {
+      model: 'test-model',
+      system: 'test',
+      messages: [{ role: 'user', content: 'run' }],
+      tools: [testTool, finalAnswerTool],
+      policy: {
+        maxConcurrentToolCalls: 2,
+      },
+    })
+
+    // second_fast has already thrown, but first_slow is still pending
+    await delay(25)
+    gate0.resolve()
+
+    const err = await runPromise.catch(e => e)
+    expect(err).toBeInstanceOf(InterruptRequested)
+    expect(err.requests[0].key).toBe('interrupt_first_slow')
   })
 })

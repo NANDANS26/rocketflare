@@ -843,55 +843,24 @@ export async function runToolLoop(
   /**
    * Run a turn's tool calls and build its `tool_result` blocks. The ONE place the approval rules
    * live — the in-loop path and the resume path both call it.
+   *
+   * Executes via a single bounded worker pool (size = min(maxConcurrentToolCalls, toolUses.length)).
+   * Emits each `tool_result` event progressively as soon as that result and all preceding results
+   * in model-request order are ready, preserving transcript order and live timeline updates.
    */
   const executeToolUses = async (
     toolUses: ToolUseBlock[],
     turn: number,
     denied: ReadonlyMap<string, string | undefined>
   ): Promise<ContentBlock[]> => {
+    if (toolUses.length === 0) return []
+
     // Calls already answered before this turn, for `maxToolCalls`. Every call in the turn still
     // gets a result — a `tool_use` left unanswered is a 400 on the NEXT request, the salvage's.
     let budget = policy?.maxToolCalls
       ? policy.maxToolCalls - countToolResults(messages, byName).toolCalls
       : Number.POSITIVE_INFINITY
 
-    if (maxConcurrentToolCalls === 1 || toolUses.length <= 1) {
-      const results: ContentBlock[] = []
-      for (const block of toolUses) {
-        let outcome: { text: string; isError: boolean }
-        if (denied.has(block.id)) {
-          const reason = denied.get(block.id)
-          outcome = {
-            text: reason
-              ? `This call was refused by policy: ${reason}`
-              : `This call was refused by policy: ${block.name} may not run here.`,
-            isError: true,
-          }
-        } else if (budget <= 0) {
-          outcome = { text: 'Not run: this run has used all of its tool calls.', isError: true }
-        } else {
-          outcome = await executeSingleToolUse(block)
-        }
-        if (!denied.has(block.id)) budget -= 1
-        results.push({
-          type: 'tool_result',
-          toolUseId: block.id,
-          content: outcome.text,
-          isError: outcome.isError,
-        })
-        await opts.onEvent?.({
-          kind: 'tool_result',
-          turn,
-          toolUseId: block.id,
-          name: block.name,
-          resultText: outcome.text,
-          isError: outcome.isError,
-        })
-      }
-      return results
-    }
-
-    // Bounded concurrent execution (cap > 1 and toolUses.length > 1)
     type TaskOutcome =
       | { kind: 'result'; outcome: { text: string; isError: boolean } }
       | { kind: 'error'; error: unknown }
@@ -900,9 +869,46 @@ export async function runToolLoop(
     let nextIndex = 0
     let stopClaiming = false
 
+    let nextEmitIndex = 0
+    let emitPromise = Promise.resolve()
+    let emitError: unknown = undefined
+
+    const flushEmits = () => {
+      emitPromise = emitPromise
+        .then(async () => {
+          while (nextEmitIndex < toolUses.length) {
+            if (emitError) break
+            const task = outcomes[nextEmitIndex]
+            if (!task || task.kind === 'error') break
+            const index = nextEmitIndex++
+            const block = toolUses[index]
+            const outcome = task.outcome
+            try {
+              await opts.onEvent?.({
+                kind: 'tool_result',
+                turn,
+                toolUseId: block.id,
+                name: block.name,
+                resultText: outcome.text,
+                isError: outcome.isError,
+              })
+            } catch (err) {
+              emitError = err
+              stopClaiming = true
+              break
+            }
+          }
+        })
+        .catch(err => {
+          emitError = err
+          stopClaiming = true
+        })
+      return emitPromise
+    }
+
     const runWorker = async () => {
       while (true) {
-        if (stopClaiming || opts.signal?.aborted) return
+        if (stopClaiming || emitError || opts.signal?.aborted) return
 
         const index = nextIndex++
         if (index >= toolUses.length) return
@@ -920,6 +926,7 @@ export async function runToolLoop(
               isError: true,
             },
           }
+          await flushEmits()
           continue
         }
 
@@ -931,6 +938,7 @@ export async function runToolLoop(
               isError: true,
             },
           }
+          await flushEmits()
           continue
         }
 
@@ -939,9 +947,11 @@ export async function runToolLoop(
         try {
           const outcome = await executeSingleToolUse(block)
           outcomes[index] = { kind: 'result', outcome }
+          await flushEmits()
         } catch (err) {
           outcomes[index] = { kind: 'error', error: err }
           stopClaiming = true
+          await flushEmits()
           return
         }
       }
@@ -951,37 +961,35 @@ export async function runToolLoop(
     const workers = Array.from({ length: workerCount }, () => runWorker())
     await Promise.all(workers)
 
+    await emitPromise
+
     if (opts.signal?.aborted) {
       throw new AiError('unavailable', client.provider, 'Agent run cancelled')
+    }
+
+    if (emitError) {
+      throw emitError
+    }
+
+    for (let i = 0; i < toolUses.length; i++) {
+      const task = outcomes[i]
+      if (task?.kind === 'error') {
+        throw task.error
+      }
     }
 
     const results: ContentBlock[] = []
     for (let i = 0; i < toolUses.length; i++) {
       const block = toolUses[i]
       const task = outcomes[i]
-
-      if (!task) {
+      if (!task || task.kind !== 'result') {
         break
       }
-
-      if (task.kind === 'error') {
-        throw task.error
-      }
-
-      const outcome = task.outcome
       results.push({
         type: 'tool_result',
         toolUseId: block.id,
-        content: outcome.text,
-        isError: outcome.isError,
-      })
-      await opts.onEvent?.({
-        kind: 'tool_result',
-        turn,
-        toolUseId: block.id,
-        name: block.name,
-        resultText: outcome.text,
-        isError: outcome.isError,
+        content: task.outcome.text,
+        isError: task.outcome.isError,
       })
     }
 
