@@ -1110,7 +1110,7 @@ export async function reconcileToolEvents(
   const events = await listEvents(db, tenantId, runId)
   const openCalls = new Map<
     string,
-    { event: AgentRunEventRow; name: string; toolCallId?: string; input?: unknown }[]
+    { event: AgentRunEventRow; name: string; toolCallId: string; input?: unknown }
   >()
   const completed = new Map<string, ReconciledToolOutcome>()
 
@@ -1119,32 +1119,38 @@ export async function reconcileToolEvents(
       const parsed = agentToolStartEventDataSchema.safeParse(event.data)
       const name = parsed.success ? parsed.data.name : 'tool'
       const toolCallId = parsed.success ? parsed.data.toolCallId : undefined
-      const key = toolCallId ?? name
-      const list = openCalls.get(key) ?? []
-      list.push({ event, name, toolCallId, input: parsed.success ? parsed.data.input : undefined })
-      openCalls.set(key, list)
+      if (!toolCallId) {
+        // Authoritative identity is toolCallId. Without it, pairing concurrent or repeated calls
+        // by name alone is unsafe and could cross-pair unrelated executions.
+        continue
+      }
+      openCalls.set(toolCallId, {
+        event,
+        name,
+        toolCallId,
+        input: parsed.success ? parsed.data.input : undefined,
+      })
     } else if (event.type === 'tool.end') {
       const parsed = agentToolEndEventDataSchema.safeParse(event.data)
       const name = parsed.success ? parsed.data.name : 'tool'
       const toolCallId = parsed.success ? parsed.data.toolCallId : undefined
+      if (!toolCallId) {
+        continue
+      }
+      openCalls.delete(toolCallId)
       const outcome =
         parsed.success && parsed.data.outcome
           ? parsed.data.outcome
           : parsed.success && parsed.data.isError
             ? 'error'
             : 'success'
-      const key = toolCallId ?? name
-      const list = openCalls.get(key)
-      list?.shift()
-      if (list && list.length === 0) openCalls.delete(key)
-      const callId = toolCallId ?? key
       const resultText = parsed.success
         ? typeof parsed.data.result === 'string'
           ? parsed.data.result
           : JSON.stringify(parsed.data.result ?? '')
         : ''
-      completed.set(callId, {
-        toolCallId: callId,
+      completed.set(toolCallId, {
+        toolCallId,
         name,
         outcome: outcome as 'unknown' | 'success' | 'error',
         text: resultText,
@@ -1177,24 +1183,24 @@ export async function reconcileToolEvents(
 
   const reconciled = new Map<string, ReconciledToolOutcome>(completed)
 
-  for (const [key, calls] of openCalls.entries()) {
-    for (const call of calls) {
-      const toolCallId = call.toolCallId ?? key
-      if (pendingToolCallIds.has(toolCallId)) {
-        // Paused on human approval: not unknown
-        continue
-      }
+  for (const [toolCallId, call] of openCalls.entries()) {
+    if (pendingToolCallIds.has(toolCallId)) {
+      // Paused on human approval: not unknown
+      continue
+    }
 
-      // Check if this tool was approved
-      const resolvedInterruptId = resolvedInterruptMap.get(toolCallId)
-      if (resolvedInterruptId) {
-        // Read effect ledger to see if it already finished before crash
-        const recorded = await readEffect(db, tenantId, runId, `tool:${resolvedInterruptId}`)
-        if (recorded) {
-          const text =
-            typeof recorded.result === 'string'
-              ? recorded.result
-              : JSON.stringify(recorded.result ?? '')
+    // Check if this tool was approved
+    const resolvedInterruptId = resolvedInterruptMap.get(toolCallId)
+    if (resolvedInterruptId) {
+      // Read effect ledger to see if it already finished before crash
+      const recorded = await readEffect(db, tenantId, runId, `tool:${resolvedInterruptId}`)
+      if (recorded) {
+        const text =
+          typeof recorded.result === 'string'
+            ? recorded.result
+            : JSON.stringify(recorded.result ?? '')
+        const claimed = await claimEffect(db, tenantId, runId, `reconciled:tool:${toolCallId}`)
+        if (claimed) {
           await appendEventAtomic(db, {
             tenantId,
             runId,
@@ -1208,26 +1214,29 @@ export async function reconcileToolEvents(
             },
             realtime: options.realtime,
           })
-          reconciled.set(toolCallId, {
-            toolCallId,
-            name: call.name,
-            outcome: 'success',
-            text,
-            isError: false,
-          })
-          continue
         }
-
-        // If not recorded in effects: if this is attempt 1 on resume and not forceSettled,
-        // it hasn't run yet; leave it to run.
-        if (!options.forceSettled && (options.attempt === undefined || options.attempt <= 1)) {
-          continue
-        }
+        reconciled.set(toolCallId, {
+          toolCallId,
+          name: call.name,
+          outcome: 'success',
+          text,
+          isError: false,
+        })
+        continue
       }
 
-      // Standard unapproved tool call, or forceSettled, or attempt > 1:
-      // Started in an earlier attempt/invocation and stopped without persisting completion. Outcome is unknown.
-      const unknownMessage = `The tool call started but the process stopped before completion was recorded. Outcome is unknown.`
+      // If not recorded in effects: if this is an active run (not forceSettled),
+      // it hasn't run yet; leave it to run.
+      if (!options.forceSettled) {
+        continue
+      }
+    }
+
+    // Standard unapproved tool call, or forceSettled:
+    // Started in an earlier attempt/invocation and stopped without persisting completion. Outcome is unknown.
+    const unknownMessage = `The tool call started but the process stopped before completion was recorded. Outcome is unknown.`
+    const claimed = await claimEffect(db, tenantId, runId, `reconciled:tool:${toolCallId}`)
+    if (claimed) {
       await appendEventAtomic(db, {
         tenantId,
         runId,
@@ -1241,14 +1250,14 @@ export async function reconcileToolEvents(
         },
         realtime: options.realtime,
       })
-      reconciled.set(toolCallId, {
-        toolCallId,
-        name: call.name,
-        outcome: 'unknown',
-        text: unknownMessage,
-        isError: false,
-      })
     }
+    reconciled.set(toolCallId, {
+      toolCallId,
+      name: call.name,
+      outcome: 'unknown',
+      text: unknownMessage,
+      isError: false,
+    })
   }
 
   return reconciled

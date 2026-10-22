@@ -273,6 +273,7 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
 
       const events = [...initialEvents]
       const insertedEvents: any[] = []
+      const claimedEffects = new Set<string>()
 
       const makeSelect = () => {
         const p: any = Promise.resolve([...events])
@@ -284,6 +285,17 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
 
       const mockDb: any = {
         select: makeSelect,
+        insert: () => ({
+          values: (val: any) => ({
+            onConflictDoNothing: () => ({
+              returning: () => {
+                if (claimedEffects.has(val.key)) return []
+                claimedEffects.add(val.key)
+                return [{ id: 'eff-1' }]
+              },
+            }),
+          }),
+        }),
         query: {
           agentRunInterrupts: {
             findMany: () => Promise.resolve([]),
@@ -394,6 +406,363 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
 
       // Call is not in reconciled map and no tool.end event was inserted
       expect(reconciled.has('call_pending')).toBe(false)
+      expect(insertedEvents).toHaveLength(0)
+    })
+
+    it('is idempotent across repeated and concurrent reconciliation calls (no duplicate tool.end events)', async () => {
+      const { reconcileToolEvents } = await import('@/api/services/agents/runs')
+
+      const events: any[] = [
+        {
+          id: 'ev-1',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 1,
+          type: 'tool.start',
+          data: { name: 'external_payment', toolCallId: 'call_concurrent_test' },
+          at: new Date('2026-10-22T10:00:00Z'),
+        },
+      ]
+
+      const insertedEvents: any[] = []
+      const claimedEffects = new Set<string>()
+
+      const makeSelect = () => {
+        const p: any = Promise.resolve([...events])
+        p.from = () => p
+        p.where = () => p
+        p.orderBy = () => p
+        return p
+      }
+
+      const mockDb: any = {
+        select: makeSelect,
+        insert: () => ({
+          values: (val: any) => ({
+            onConflictDoNothing: () => ({
+              returning: () => {
+                if (claimedEffects.has(val.key)) return []
+                claimedEffects.add(val.key)
+                return [{ id: 'eff-' + val.key }]
+              },
+            }),
+          }),
+        }),
+        query: {
+          agentRunInterrupts: {
+            findMany: () => Promise.resolve([]),
+          },
+        },
+        execute: async () => {
+          const seq = events.length + 1
+          const row = {
+            id: `ev-${seq}`,
+            runId: 'run-1',
+            tenantId: 'tenant-1',
+            seq,
+            type: 'tool.end',
+            data: {
+              name: 'external_payment',
+              toolCallId: 'call_concurrent_test',
+              outcome: 'unknown',
+              isError: false,
+              result: 'Outcome is unknown.',
+            },
+            at: new Date(),
+          }
+          events.push(row)
+          insertedEvents.push(row)
+          return [row]
+        },
+      }
+
+      // Simulate concurrent calls to reconcileToolEvents
+      const [res1, res2] = await Promise.all([
+        reconcileToolEvents(mockDb, 'tenant-1', 'run-1', { forceSettled: true }),
+        reconcileToolEvents(mockDb, 'tenant-1', 'run-1', { forceSettled: true }),
+      ])
+
+      // Sequential follow-up call
+      const res3 = await reconcileToolEvents(mockDb, 'tenant-1', 'run-1', { forceSettled: true })
+
+      // Exactly ONE tool.end event was persisted
+      expect(insertedEvents).toHaveLength(1)
+      expect(res1.get('call_concurrent_test')?.outcome).toBe('unknown')
+      expect(res2.get('call_concurrent_test')?.outcome).toBe('unknown')
+      expect(res3.get('call_concurrent_test')?.outcome).toBe('unknown')
+    })
+
+    it('does not cross-pair concurrent calls to the same tool name', async () => {
+      const { reconcileToolEvents } = await import('@/api/services/agents/runs')
+
+      // Two concurrent calls to 'search_knowledge' in the same turn:
+      // call_A completed, call_B crashed
+      const events: any[] = [
+        {
+          id: 'ev-1',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 1,
+          type: 'tool.start',
+          data: { name: 'search_knowledge', toolCallId: 'call_A', input: { q: 'A' } },
+          at: new Date('2026-10-22T10:00:00Z'),
+        },
+        {
+          id: 'ev-2',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 2,
+          type: 'tool.start',
+          data: { name: 'search_knowledge', toolCallId: 'call_B', input: { q: 'B' } },
+          at: new Date('2026-10-22T10:00:01Z'),
+        },
+        {
+          id: 'ev-3',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 3,
+          type: 'tool.end',
+          data: { name: 'search_knowledge', toolCallId: 'call_A', result: 'found A' },
+          at: new Date('2026-10-22T10:00:02Z'),
+        },
+      ]
+
+      const insertedEvents: any[] = []
+      const claimedEffects = new Set<string>()
+
+      const makeSelect = () => {
+        const p: any = Promise.resolve([...events])
+        p.from = () => p
+        p.where = () => p
+        p.orderBy = () => p
+        return p
+      }
+
+      const mockDb: any = {
+        select: makeSelect,
+        insert: () => ({
+          values: (val: any) => ({
+            onConflictDoNothing: () => ({
+              returning: () => {
+                if (claimedEffects.has(val.key)) return []
+                claimedEffects.add(val.key)
+                return [{ id: 'eff-1' }]
+              },
+            }),
+          }),
+        }),
+        query: {
+          agentRunInterrupts: {
+            findMany: () => Promise.resolve([]),
+          },
+        },
+        execute: async () => {
+          const seq = events.length + 1
+          const row = {
+            id: `ev-${seq}`,
+            runId: 'run-1',
+            tenantId: 'tenant-1',
+            seq,
+            type: 'tool.end',
+            data: {
+              name: 'search_knowledge',
+              toolCallId: 'call_B',
+              outcome: 'unknown',
+              isError: false,
+              result: 'Outcome is unknown.',
+            },
+            at: new Date(),
+          }
+          events.push(row)
+          insertedEvents.push(row)
+          return [row]
+        },
+      }
+
+      const reconciled = await reconcileToolEvents(mockDb, 'tenant-1', 'run-1', {
+        forceSettled: true,
+      })
+
+      // call_A is success (not overwritten or confused with call_B)
+      expect(reconciled.get('call_A')).toMatchObject({
+        toolCallId: 'call_A',
+        outcome: 'success',
+        text: 'found A',
+      })
+
+      // call_B is unknown
+      expect(reconciled.get('call_B')).toMatchObject({
+        toolCallId: 'call_B',
+        outcome: 'unknown',
+      })
+
+      // Only call_B received an appended tool.end
+      expect(insertedEvents).toHaveLength(1)
+      expect(insertedEvents[0].data.toolCallId).toBe('call_B')
+    })
+
+    it('reconciles approved tool call as success when effect was recorded before crash', async () => {
+      const { reconcileToolEvents } = await import('@/api/services/agents/runs')
+
+      const events: any[] = [
+        {
+          id: 'ev-1',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 1,
+          type: 'tool.start',
+          data: { name: 'save_record', toolCallId: 'call_appr_1', input: { id: 123 } },
+          at: new Date('2026-10-22T10:00:00Z'),
+        },
+      ]
+
+      const insertedEvents: any[] = []
+      const claimedEffects = new Set<string>()
+
+      const makeSelect = (arg?: any) => {
+        const isEffectQuery = Boolean(arg && typeof arg === 'object' && 'result' in arg)
+        const p: any = Promise.resolve(
+          isEffectQuery ? [{ result: { recordId: 123, saved: true } }] : [...events]
+        )
+        p.from = () => p
+        p.where = () => p
+        p.orderBy = () => p
+        return p
+      }
+
+      let findManyCallCount = 0
+
+      const mockDb: any = {
+        select: makeSelect,
+        insert: () => ({
+          values: (val: any) => ({
+            onConflictDoNothing: () => ({
+              returning: () => {
+                if (claimedEffects.has(val.key)) return []
+                claimedEffects.add(val.key)
+                return [{ id: 'eff-1' }]
+              },
+            }),
+          }),
+        }),
+        query: {
+          agentRunInterrupts: {
+            findMany: () => {
+              findManyCallCount++
+              // First call: pending interrupts -> empty
+              if (findManyCallCount === 1) {
+                return Promise.resolve([])
+              }
+              // Second call: resolved interrupts -> int-appr-1
+              return Promise.resolve([
+                {
+                  id: 'int-appr-1',
+                  runId: 'run-1',
+                  tenantId: 'tenant-1',
+                  key: 'tool:call_appr_1',
+                  toolCallId: 'call_appr_1',
+                  status: 'resolved',
+                },
+              ])
+            },
+          },
+        },
+        execute: async () => {
+          const seq = events.length + 1
+          const row = {
+            id: `ev-${seq}`,
+            runId: 'run-1',
+            tenantId: 'tenant-1',
+            seq,
+            type: 'tool.end',
+            data: {
+              name: 'save_record',
+              toolCallId: 'call_appr_1',
+              outcome: 'success',
+              isError: false,
+              result: { recordId: 123, saved: true },
+            },
+            at: new Date(),
+          }
+          events.push(row)
+          insertedEvents.push(row)
+          return [row]
+        },
+      }
+
+      const reconciled = await reconcileToolEvents(mockDb, 'tenant-1', 'run-1', {
+        forceSettled: true,
+      })
+
+      expect(reconciled.get('call_appr_1')).toMatchObject({
+        toolCallId: 'call_appr_1',
+        outcome: 'success',
+        text: '{"recordId":123,"saved":true}',
+        isError: false,
+      })
+      expect(insertedEvents).toHaveLength(1)
+      expect(insertedEvents[0].data.outcome).toBe('success')
+    })
+
+    it('leaves approved tool call to run on active resume when effect has not been recorded yet', async () => {
+      const { reconcileToolEvents } = await import('@/api/services/agents/runs')
+
+      const events: any[] = [
+        {
+          id: 'ev-1',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 1,
+          type: 'tool.start',
+          data: { name: 'charge_card', toolCallId: 'call_pending_run', input: { amount: 50 } },
+          at: new Date('2026-10-22T10:00:00Z'),
+        },
+      ]
+
+      const insertedEvents: any[] = []
+
+      const makeSelect = (arg?: any) => {
+        const isEffectQuery = Boolean(arg && typeof arg === 'object' && 'result' in arg)
+        const p: any = Promise.resolve(isEffectQuery ? [] : [...events])
+        p.from = () => p
+        p.where = () => p
+        p.orderBy = () => p
+        return p
+      }
+
+      const mockDb: any = {
+        select: makeSelect,
+        insert: () => {
+          throw new Error('should not insert event')
+        },
+        query: {
+          agentRunInterrupts: {
+            findMany: () =>
+              Promise.resolve([
+                {
+                  id: 'int-charge-1',
+                  runId: 'run-1',
+                  tenantId: 'tenant-1',
+                  key: 'tool:call_pending_run',
+                  toolCallId: 'call_pending_run',
+                  status: 'resolved',
+                },
+              ]),
+          },
+        },
+        execute: async () => {
+          throw new Error('should not execute insert event')
+        },
+      }
+
+      // Active run resumption (not forceSettled)
+      const reconciled = await reconcileToolEvents(mockDb, 'tenant-1', 'run-1', {
+        forceSettled: false,
+        attempt: 2,
+      })
+
+      // Must NOT be marked unknown; leave it to run
+      expect(reconciled.has('call_pending_run')).toBe(false)
       expect(insertedEvents).toHaveLength(0)
     })
   })
