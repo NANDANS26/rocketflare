@@ -1935,6 +1935,20 @@ export function buildPluginProgram(files, options = {}) {
   return ts.createProgram(fileList, compilerOptions, host)
 }
 
+const ASSET_SPECIFIER_RE =
+  /\.(css|scss|sass|less|styl|stylus|pcss|sss|svg|png|jpe?g|gif|webp|avif|ico|bmp|wasm)($|\?)/i
+
+const WORKERD_AMBIENT_MODULES = new Set([
+  'cloudflare:workers',
+  'cloudflare:workflows',
+  'cloudflare:durable-objects',
+  'cloudflare:email',
+  'cloudflare:node',
+  'cloudflare:sockets',
+  'cloudflare:pipelines',
+  'cloudflare:test',
+])
+
 /**
  * Checks for unresolved imports and dependencies (such as TS2307) across plugin files.
  *
@@ -2021,8 +2035,53 @@ export function unresolvedPluginImports(files, options = {}) {
     function checkImport(specifierNode) {
       if (!specifierNode || !ts.isStringLiteral(specifierNode)) return
       const specifier = specifierNode.text
+      if (
+        WORKERD_AMBIENT_MODULES.has(specifier) ||
+        specifier.startsWith('cloudflare:') ||
+        specifier.startsWith('assets:')
+      ) {
+        return
+      }
+
       const res = ts.resolveModuleName(specifier, norm, compilerOptions, host)
       if (!res.resolvedModule) {
+        if (ASSET_SPECIFIER_RE.test(specifier)) {
+          const clean = specifier.split('?')[0]
+          if (clean.startsWith('.') || clean.startsWith('/')) {
+            const assetPath = path.resolve(path.dirname(norm), clean)
+            if (
+              isVirtual
+                ? virtualMap.has(assetPath)
+                : fs.existsSync(assetPath) || host.fileExists(assetPath)
+            ) {
+              return
+            }
+          } else if (clean.startsWith('@/')) {
+            const assetPath = path.resolve(repoRoot, 'apps/web/src', clean.slice(2))
+            if (
+              isVirtual
+                ? virtualMap.has(assetPath)
+                : fs.existsSync(assetPath) || host.fileExists(assetPath)
+            ) {
+              return
+            }
+          } else if (clean.startsWith('@testkit/')) {
+            const assetPath = path.resolve(repoRoot, 'apps/web/tests/kit', clean.slice(10))
+            if (
+              isVirtual
+                ? virtualMap.has(assetPath)
+                : fs.existsSync(assetPath) || host.fileExists(assetPath)
+            ) {
+              return
+            }
+          } else if (!isVirtual) {
+            try {
+              createRequire(norm).resolve(clean)
+              return
+            } catch {}
+          }
+        }
+
         const line = sf.getLineAndCharacterOfPosition(specifierNode.getStart(sf)).line + 1
         unresolved.push({
           file: isVirtual ? relOrAbs : path.relative(repoRoot, norm).replace(/\\/g, '/'),

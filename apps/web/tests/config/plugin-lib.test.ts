@@ -1409,10 +1409,21 @@ describe('the audit', () => {
     const good = unresolvedPluginImports({
       'apps/web/src/plugins/valid-plugin/index.ts': [
         'import { z } from "zod"',
+        'import type { WorkflowStep } from "cloudflare:workers"',
+        'import "./style.css"',
         'export const schema = z.object({ id: z.string() })',
       ].join('\n'),
+      'apps/web/src/plugins/valid-plugin/style.css': 'body { color: red; }',
     })
     expect(good).toEqual([])
+
+    // Non-existent asset import fails with TS2307
+    const missingAsset = unresolvedPluginImports({
+      'apps/web/src/plugins/valid-plugin/index.ts': 'import "./missing-style.css"',
+    })
+    expect(missingAsset.some(d => d.code === 2307 && d.message.includes('missing-style.css'))).toBe(
+      true
+    )
   })
 
   /**
