@@ -14,7 +14,7 @@
  * `plugin-lib.d.mts` beside this file is the hand-written type surface (no `allowJs`).
  */
 import fs from 'node:fs'
-import { createRequire } from 'node:module'
+import { createRequire, isBuiltin } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { KIT } from './rename-lib.mjs'
@@ -2036,6 +2036,7 @@ export function unresolvedPluginImports(files, options = {}) {
       if (!specifierNode || !ts.isStringLiteral(specifierNode)) return
       const specifier = specifierNode.text
       if (
+        isBuiltin(specifier) ||
         WORKERD_AMBIENT_MODULES.has(specifier) ||
         specifier.startsWith('cloudflare:') ||
         specifier.startsWith('assets:')

@@ -1409,6 +1409,7 @@ describe('the audit', () => {
     const good = unresolvedPluginImports({
       'apps/web/src/plugins/valid-plugin/index.ts': [
         'import { z } from "zod"',
+        'import fs from "node:fs"',
         'import type { WorkflowStep } from "cloudflare:workers"',
         'import "./style.css"',
         'export const schema = z.object({ id: z.string() })',
