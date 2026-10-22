@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { runToolLoop, type Tool, type ToolLoopEvent } from '@/api/services/ai/kit'
+import {
+  runToolLoop,
+  type Tool,
+  type ToolLoopCheckpoint,
+  type ToolLoopEvent,
+} from '@/api/services/ai/kit'
 import { FakeChatClient } from '../helpers/ai'
 
 const dummySchema = z.object({ id: z.string() })
@@ -147,45 +152,89 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
     })
   })
 
-  it('3. checkpoints assistant turn before executing tools so retry finds pending tool uses', async () => {
+  it('3. resumes from checkpoint with pending tool calls and reconciles unknown tool outcome without re-executing', async () => {
+    let executionCount = 0
     let checkpointsSaved = 0
-    let hasAssistantTurnBeforeExecute = false
 
-    const tool: Tool<{ id: string }> = {
-      name: 'test_tool',
-      description: 'Test tool',
+    const sideEffectTool: Tool<{ id: string }> = {
+      name: 'charge_card',
+      description: 'Perform a side effect',
       schema: dummySchema,
-      handler: async () => {
-        // When tool runs, verify checkpoint was already saved
-        if (checkpointsSaved >= 1) {
-          hasAssistantTurnBeforeExecute = true
-        }
-        return 'ok'
+      handler: async ({ id }) => {
+        executionCount += 1
+        return `charged-${id}`
       },
     }
 
     const client = new FakeChatClient([
       {
-        toolUses: [{ name: 'test_tool', input: { id: '1' } }],
-      },
-      {
-        toolUses: [{ name: 'final_answer', input: { answer: 'Done' } }],
+        toolUses: [{ name: 'final_answer', input: { answer: 'Recovered' } }],
       },
     ])
 
-    await runToolLoop(client, {
+    const unknownMessage =
+      'The tool call started but the process stopped before completion was recorded. Outcome is unknown.'
+
+    // A checkpoint where an assistant turn asked to call `charge_card` with `call_pending`
+    const resumeCheckpoint: ToolLoopCheckpoint = {
+      turns: 1,
+      usage: { inputTokens: 10, outputTokens: 5 },
+      messages: [
+        { role: 'user', content: 'Charge 100' },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_pending',
+              name: 'charge_card',
+              input: { id: 'card_pending_1' },
+            },
+          ],
+        },
+      ],
+    }
+
+    const reconciledTools = new Map([
+      [
+        'call_pending',
+        {
+          text: unknownMessage,
+          isError: false,
+          outcome: 'unknown',
+        },
+      ],
+    ])
+
+    const res = await runToolLoop(client, {
       model: 'test-model',
       system: 'Test system',
-      messages: [{ role: 'user', content: 'Go' }],
-      tools: [tool, finalAnswerTool],
+      messages: [{ role: 'user', content: 'Seed should be ignored on resume' }],
+      tools: [sideEffectTool, finalAnswerTool],
+      resume: resumeCheckpoint,
+      reconciledTools,
       onCheckpoint: async _cp => {
         checkpointsSaved += 1
       },
     })
 
-    expect(hasAssistantTurnBeforeExecute).toBe(true)
-    // At least 2 checkpoints: one before execute, one after tool results
-    expect(checkpointsSaved).toBeGreaterThanOrEqual(2)
+    // The tool handler MUST NOT execute because it was reconciled!
+    expect(executionCount).toBe(0)
+
+    // The transcript MUST contain the reconciled outcome for the model
+    const toolResult = res.messages
+      .flatMap(m => (Array.isArray(m.content) ? m.content : []))
+      .find(b => b.type === 'tool_result' && b.toolUseId === 'call_pending')
+
+    expect(toolResult).toBeDefined()
+    if (toolResult && toolResult.type === 'tool_result') {
+      expect(toolResult.content).toBe(unknownMessage)
+      expect(toolResult.isError).toBe(false)
+    }
+
+    // Checkpoint saved for the completed turn
+    expect(checkpointsSaved).toBeGreaterThanOrEqual(1)
+    expect(res.terminalInput).toEqual({ answer: 'Recovered' })
   })
 
   it('4. executes newly requested tool calls in subsequent turns even when earlier calls were reconciled', async () => {

@@ -1124,7 +1124,6 @@ export async function runToolLoop(
     const gates = collectGates(toolUses, denied)
     if (gates.length > 0) return await raise(gates)
 
-    await checkpoint()
     messages.push({ role: 'user', content: await executeToolUses(toolUses, turns, denied) })
     await checkpoint()
   }
