@@ -6,7 +6,9 @@
  *                 spend (429 `ai_budget_exceeded`) → insert `queued` with the slot (the partial
  *                 unique index rejects a second active run in it → the existing one) →
  *                 `AGENT_RUN_WORKFLOW.create({ id: runId })` → store `instanceId`. No binding →
- *                 `AgentRunsNotConfiguredError` (503) BEFORE any write.
+ *                 `AgentRunsNotConfiguredError` (503) BEFORE any write. An `idempotencyKey` derives
+ *                 the run id from (tenant, agent, key), so a second call — a redelivered job —
+ *                 answers the run the first one started, whatever its status, `deduplicated`.
  *   enqueueRunBatch — D39: up to `AGENT_RUN_BATCH_MAX` inputs of ONE non-exclusive agent, one
  *                 multi-row insert sharing a `batch_id`, one `createBatch()`; when that call fails,
  *                 each instance is created on its own so only the inputs that really cannot start
@@ -189,6 +191,13 @@ export interface EnqueueRunInput {
    * non-exclusive one none — it runs freely.
    */
   concurrencyKey?: string
+  /**
+   * At most one run EVER per (tenant, agent, key) — not just one active one. The run id is derived
+   * from the three (`idempotentRunId`), so the primary key is the gate: a second call returns the
+   * first call's run, settled or not, with `deduplicated: true`. What a background caller passes
+   * so a redelivered message cannot start the same work twice.
+   */
+  idempotencyKey?: string
 }
 
 export interface EnqueueRunResult {
@@ -226,6 +235,31 @@ export class AgentExclusiveError extends BadRequestError {
   }
 }
 
+/**
+ * The run id an `idempotencyKey` stands for: SHA-256 of (tenant, agent, key), shaped as a version-8
+ * UUID. Deterministic, so the same three always name the same row and the same Workflow instance.
+ */
+export async function idempotentRunId(
+  tenantId: string,
+  agentKey: string,
+  idempotencyKey: string
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`agent-run\u0000${tenantId}\u0000${agentKey}\u0000${idempotencyKey}`)
+  )
+  const bytes = new Uint8Array(digest).slice(0, 16)
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x80
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80
+  const hex = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/** `create()` answered that the instance is there already — a retry of a call that half-landed. */
+function isInstanceExistsError(err: unknown): boolean {
+  return /already.?exists/i.test(errorMessage(err))
+}
+
 /** Runs the tenant has queued, running or parked — what the concurrency cap counts. */
 export async function countActiveRuns(db: Database, tenantId: string): Promise<number> {
   const [row] = await db
@@ -255,6 +289,12 @@ async function assertCapacity(db: Database, cfg: AppConfig, tenantId: string, ad
  *
  * An exclusive agent's active run is looked for BEFORE the capacity check, so asking again for a
  * run that is already going is never a 429; the unique index still decides a genuine race.
+ *
+ * With an `idempotencyKey` the derived run's row is looked for first of all (after validation), and
+ * a hit is the answer. A hit still `queued` with no instance — the caller that inserted it died
+ * before `create()`, or is mid-call — gets its instance created here; "already exists" counts as
+ * started. A `create()` failure DELETES an idempotent row instead of failing it, because a failed
+ * row under the derived id would answer every retry with "deduplicated" and the work would never run.
  */
 export async function enqueueRun(
   db: Database,
@@ -268,14 +308,25 @@ export async function enqueueRun(
   const parsed = agent.meta.inputSchema.safeParse(input.input)
   if (!parsed.success) throw new ValidationError(parsed.error.issues, 'Invalid agent input')
   const concurrencyKey = input.concurrencyKey ?? (agent.meta.exclusive ? '' : null)
+  const runId = input.idempotencyKey
+    ? await idempotentRunId(input.tenantId, input.agentKey, input.idempotencyKey)
+    : crypto.randomUUID()
 
+  if (input.idempotencyKey) {
+    const existing = await getRun(db, input.tenantId, runId)
+    if (existing) {
+      return {
+        run: await ensureInstance(db, workflow, existing, input.tenantId),
+        deduplicated: true,
+      }
+    }
+  }
   if (concurrencyKey !== null) {
     const existing = await findActiveRun(db, input.tenantId, input.agentKey, concurrencyKey)
     if (existing) return { run: existing, deduplicated: true }
   }
   await assertCapacity(db, cfg, input.tenantId, 1)
 
-  const runId = crypto.randomUUID()
   let row: AgentRunRow | undefined
   try {
     ;[row] = await db
@@ -296,7 +347,13 @@ export async function enqueueRun(
       })
       .returning()
   } catch (err) {
-    if (!isUniqueViolation(err) || concurrencyKey === null) throw err
+    if (!isUniqueViolation(err)) throw err
+    if (input.idempotencyKey) {
+      // A concurrent call with the same key inserted first — its row is the answer.
+      const same = await getRun(db, input.tenantId, runId)
+      if (same) return { run: same, deduplicated: true }
+    }
+    if (concurrencyKey === null) throw err
     const existing = await findActiveRun(db, input.tenantId, input.agentKey, concurrencyKey)
     if (!existing) throw err // the slot freed between the insert and the read — a retry will win
     return { run: existing, deduplicated: true }
@@ -310,11 +367,46 @@ export async function enqueueRun(
     })
     row = (await storeInstanceId(db, input.tenantId, row.id, instance.id)) ?? row
   } catch (err) {
-    await failRun(db, input.tenantId, row.id, `Could not start the workflow: ${errorMessage(err)}`)
-    throw err
+    if (input.idempotencyKey && isInstanceExistsError(err)) {
+      row = (await storeInstanceId(db, input.tenantId, row.id, row.id)) ?? row
+    } else if (input.idempotencyKey) {
+      // Leave nothing under the derived id, so the caller's retry starts the run afresh.
+      await db
+        .delete(agentRuns)
+        .where(and(eq(agentRuns.id, row.id), eq(agentRuns.tenantId, input.tenantId)))
+      throw err
+    } else {
+      await failRun(
+        db,
+        input.tenantId,
+        row.id,
+        `Could not start the workflow: ${errorMessage(err)}`
+      )
+      throw err
+    }
   }
   nudgeRun(input.realtime, input.tenantId, row.id)
   return { run: row, deduplicated: false }
+}
+
+/**
+ * An idempotent hit that never got its instance (`queued`, no `instanceId`): create it now. The id
+ * is the run id, so a racing creator makes the platform answer "already exists", which is success.
+ */
+async function ensureInstance(
+  db: Database,
+  workflow: AgentRunWorkflowBinding,
+  row: AgentRunRow,
+  tenantId: string
+): Promise<AgentRunRow> {
+  if (row.instanceId || row.status !== 'queued') return row
+  let instanceId = row.id
+  try {
+    instanceId = (await workflow.create({ id: row.id, params: { runId: row.id, tenantId } })).id
+  } catch (err) {
+    if (!isInstanceExistsError(err)) throw err
+  }
+  return (await storeInstanceId(db, tenantId, row.id, instanceId)) ?? row
 }
 
 async function storeInstanceId(
@@ -440,7 +532,7 @@ export async function enqueueRunBatch(
       try {
         instanceId = (await workflow.create(params(entry.row))).id
       } catch (err) {
-        if (/already.?exists/i.test(errorMessage(err))) instanceId = entry.row.id
+        if (isInstanceExistsError(err)) instanceId = entry.row.id
         else failure = errorMessage(err)
       }
     }

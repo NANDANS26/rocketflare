@@ -31,6 +31,7 @@ import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { chunks, type DocumentRow, documentGroups, documents, files } from '../../../db/schema'
 import { traceEmbed } from '../../observability/context'
+import { stripControlChars } from '../../utils/core/text'
 import { enqueueJob, type JobsQueue } from '../jobs'
 import { deleteStoredFile, type StorageService, storeUploadedFile } from '../storage'
 import { chunkText, type TextChunk } from './chunking'
@@ -174,7 +175,8 @@ export async function indexDocument(
             documentId,
             tenantId,
             seq: p.seq,
-            text: p.text,
+            // A row written before the strip existed may still hold a NUL; never let it fail here.
+            text: stripControlChars(p.text),
             tokenCount: p.tokenCount,
             embedding: vectors[i] as number[],
           }))
@@ -282,7 +284,8 @@ export async function ingestText(
   input: IngestTextInput,
   deps: IngestDeps = {}
 ): Promise<IngestResult> {
-  const pieces = chunkText(input.text)
+  const text = stripControlChars(input.text)
+  const pieces = chunkText(text)
   const embeddings = await resolveEmbeddings(db, cfg, env, input.tenantId)
   const values = {
     tenantId: input.tenantId,
@@ -290,8 +293,8 @@ export async function ingestText(
     title: input.title,
     source: input.source ?? null,
     contentType: input.contentType ?? 'text/plain',
-    sizeBytes: new TextEncoder().encode(input.text).byteLength,
-    content: input.text,
+    sizeBytes: new TextEncoder().encode(text).byteLength,
+    content: text,
     fileId: null,
     status: 'pending' as const,
     visibility: input.visibility ?? 'tenant',
@@ -470,7 +473,7 @@ export async function ingestFile(
   let text: string | null = null
   let pieces: TextChunk[] = []
   if (input.type.kind === 'text') {
-    text = await decodeText(input.file)
+    text = stripControlChars(await decodeText(input.file))
     pieces = chunkText(text)
   }
 
@@ -555,11 +558,13 @@ export async function convertAndIndexDocument(
     const blob = new Blob([await new Response(object.body).arrayBuffer()], {
       type: type.contentType,
     })
-    const { text } = await convertToText(env, {
+    const converted = await convertToText(env, {
       name: file.filename,
       blob,
       contentType: type.contentType,
     })
+    // Some PDFs convert with NULs in the text, which Postgres refuses (22021) — strip before the write.
+    const text = stripControlChars(converted.text)
     if (text.length > INGEST_TEXT_MAX_CHARS) throw tooLong(text.length)
     await db
       .update(documents)
