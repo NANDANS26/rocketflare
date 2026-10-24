@@ -6,6 +6,11 @@ copy of the kit forward without recreating anything its owner deleted.
 
 If you are running a copy: `pnpm kit:upgrade` tells you which of these you are missing.
 
+## 0.23.0 — 2026-10-24
+
+Plugins can start agent runs from jobs, crons and inbound email with an idempotency key, agents and tools get `storage()`, converted text with NUL bytes now indexes, and unlabelled plugin nav groups share one block.
+[Porting note](docs/upgrades/0.23.0.md).
+
 ## 0.22.0 — 2026-10-24
 
 Agent tool calls now run concurrently under a configurable cap, and plugins can receive inbound email through a new `emailHandlers` slot and the Worker's `email` export.
