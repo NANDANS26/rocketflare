@@ -6,6 +6,11 @@ copy of the kit forward without recreating anything its owner deleted.
 
 If you are running a copy: `pnpm kit:upgrade` tells you which of these you are missing.
 
+## 0.22.0 — 2026-10-24
+
+Agent tool calls now run concurrently under a configurable cap, and plugins can receive inbound email through a new `emailHandlers` slot and the Worker's `email` export.
+[Porting note](docs/upgrades/0.22.0.md).
+
 ## 0.21.0 — 2026-10-16
 
 Agents can run many at once, in batches and fan-outs, with a usage row per call, budgets and tool-loop policies; plugin agents can ask questions; and `pnpm web agent:replay` re-runs past runs with today's code.
