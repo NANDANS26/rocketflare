@@ -23,6 +23,7 @@ import type { EffectiveRole } from '@rocketflare/shared/permissions'
 import type { AgentKeyOf, JobTypeOf, PromptKeyOf, SharedPlugin } from '@rocketflare/shared/plugins'
 import type { Hono, MiddlewareHandler } from 'hono'
 import type { ComponentType, LazyExoticComponent } from 'react'
+import type { EmailHandler } from '../api/email'
 import type { JobHandler } from '../api/queues/jobs'
 import type { ScheduledTask } from '../api/scheduled'
 import type { VisibilityResource } from '../api/services/access'
@@ -113,6 +114,16 @@ export interface ServerPlugin<S extends SharedPlugin = SharedPlugin> {
    * in BOTH tomls by hand — the parity test is what catches a forgotten one.
    */
   scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>
+  /**
+   * Inbound email (Cloudflare Email Routing → the Worker's `email` handler), merged into
+   * `EMAIL_HANDLERS` in `api/email.ts` and matched on the recipient's local part (`receipts` takes
+   * `receipts@…` and `receipts+tag@…`; `*` is the catch-all). The host opens the DB client, rejects
+   * a message nobody claims and turns a throw into a temporary failure the sender retries; it does
+   * NOT parse MIME, resolve a tenant, store the message or check who sent it — all of that is the
+   * handler's, which should stay short and enqueue the real work. Routing an address to the Worker
+   * is a Cloudflare dashboard (or API) step per zone; nothing here or in a toml declares it.
+   */
+  emailHandlers?: readonly EmailHandler[]
   /** Per-role CASL rules, applied after the kit's own matrix — additive, never a replacement. */
   grants?: Partial<Record<EffectiveRole, RoleGrant>>
   /** Plugin tables with no `tenant_id`, unioned into `RLS_EXCLUDED_TABLES` with a reason each. */

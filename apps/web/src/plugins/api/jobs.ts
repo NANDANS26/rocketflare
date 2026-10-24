@@ -21,6 +21,8 @@ import type { JobContext } from '../../api/queues/jobs'
 import type { TaskContext } from '../../api/scheduled'
 import { tenantFeatures } from '../../api/services/features'
 import { enqueueJob, enqueueJobs } from '../../api/services/jobs'
+import { createR2Storage, type StorageService } from '../../api/services/storage'
+import { ServiceUnavailableError } from '../../api/utils/core/errors'
 import { createStepRealtimeFor } from './realtime-step'
 import type { PluginContext } from './types'
 
@@ -57,6 +59,12 @@ export interface BackgroundMethods {
    * tenant's override and the platform state alone.
    */
   features(tenantId: string): Promise<readonly string[]>
+  /**
+   * R2 (the `FILES` bucket), or a 503 `storage_not_configured` — loud, because a silently absent
+   * bucket loses bytes. The same service `RequestCtx.storage()` returns. Write under
+   * `tenants/<tenantId>/<plugin id>/…` so the `tenant.purge` job removes the objects with the tenant.
+   */
+  storage(): StorageService
 }
 
 /**
@@ -85,6 +93,15 @@ export function backgroundMethods({ db, config, env }: PluginContext): Backgroun
     durableObject: (namespace, tenantId, key) =>
       namespace.get(namespace.idFromName(key ? `${tenantId}:${key}` : tenantId)),
     features: tenantId => tenantFeatures(db, config, tenantId),
+    storage: () => {
+      if (!env.FILES) {
+        throw new ServiceUnavailableError(
+          'File storage is not configured',
+          'storage_not_configured'
+        )
+      }
+      return createR2Storage(env.FILES)
+    },
   }
 }
 

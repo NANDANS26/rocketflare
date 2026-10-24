@@ -892,8 +892,17 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
   round-trip the plugin started: HMAC-SHA256 under a key HKDF-derived from
   `OAUTH_ENCRYPTION_KEY`, a `purpose` that is part of the signed body, an absolute expiry
   (default 10 min), `null` for every failure. Signed, not encrypted.
-- **Background feature checks (D34)**: `JobCtx`, `CronCtx` and `PublicCtx` carry
-  `features(tenantId)` — the same resolution as `auth.features`, with no user, so a cron that fans
+- **Inbound email**: `emailHandlers` route Cloudflare Email Routing mail ("Send to a Worker") to
+  a plugin by the recipient's LOCAL PART — `receipts` takes `receipts@…` and `receipts+tag@…`, `*`
+  is the catch-all — through the Worker's `email` export (`api/email.ts`). The host validates
+  config, opens one DB client, `setReject`s an address nobody claims and rethrows a handler's
+  failure (a temporary failure the sender retries, never a bounce). The handler gets `emailCtx` —
+  `CronCtx`'s shape, no tenant: an address is not an organisation — and owns MIME parsing, sender
+  checks, tenant resolution and storage; it should store, write a row and enqueue. Routing an
+  address to the Worker is a per-zone dashboard step. `plugins.test.ts` refuses two plugins
+  claiming one local part.
+- **Background feature checks (D34)**: `JobCtx`, `CronCtx`, `PublicCtx` and `EmailCtx` carry
+  `storage()` (R2 under `tenants/<id>/<plugin id>/…`, purged with the tenant) and `features(tenantId)` — the same resolution as `auth.features`, with no user, so a cron that fans
   out across tenants can skip the ones whose flag is off.
 - **Knowledge ingest (D34)**: `ingestDocument` / `ingestDocumentFile` / `deleteIngestedDocument`
   over the kit's ingest paths (§9). With an `externalId`, the same `(tenant, source, externalId)`
@@ -947,10 +956,11 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
 | 21 | `plugin check` is an exhaustive, untiered oracle that reads comment-free code |
 | 22 | Table prefixes are convention; collisions are the check |
 | 23 | A plugin ships agent skills: `skills/<dir>/` → `.claude/skills/<dir>/`, namespaced by id, replaced on upgrade |
+| 24 | Inbound email is a slot keyed by local part; the host dispatches and rejects, the plugin parses, authenticates and stores |
 
 **Known gaps:** no sandbox, review or signing; no rename migrations (expand/contract only); no
 cross-plugin FK tooling or `many()` onto core tables; `grants` is additive by convention only;
-provisioning never deletes resources; `d1`/`vectorize`/`analytics_engine` bindings are refused;
+provisioning never deletes resources and never creates an Email Routing rule; `d1`/`vectorize`/`analytics_engine` bindings are refused;
 the ledger judges only ledgered entries, ignores namespace imports, truncates types over 300
 chars, and `uses` is only as fresh as the last export; table collisions are caught by `check`, not
 refused at `add`; the isolation check proves a test exists, not that it is right; no database-free

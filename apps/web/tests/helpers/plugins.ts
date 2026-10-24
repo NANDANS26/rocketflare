@@ -157,6 +157,32 @@ export function publicMountIssues(
   return issues
 }
 
+/**
+ * **One local part, one owner** (the `emailHandlers` slot). The dispatcher takes the first handler
+ * whose local part matches, so a second plugin claiming `receipts` — or a second catch-all — is
+ * silently dead code; the only place to see it is here. Local parts must also be in the form the
+ * dispatcher compares against: lower-case, no `+tag`, no `@domain`.
+ */
+export function emailHandlerIssues(
+  plugins: readonly { id: string; localParts: readonly string[] }[]
+): string[] {
+  const issues: string[] = []
+  const owner = new Map<string, string>()
+  for (const { id, localParts } of plugins) {
+    for (const local of localParts) {
+      if (local !== '*' && (local !== local.toLowerCase() || /[+@\s]/.test(local) || !local)) {
+        issues.push(
+          `${id}: email local part '${local}' must be lower-case with no '+', '@' or space`
+        )
+      }
+      const prior = owner.get(local)
+      if (prior) issues.push(`${id}: email local part '${local}' is already handled by ${prior}`)
+      else owner.set(local, id)
+    }
+  }
+  return issues
+}
+
 // ---- the plugin import rule (D31) ----------------------------------------------------------------
 
 /**
