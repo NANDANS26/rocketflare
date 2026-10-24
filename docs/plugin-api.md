@@ -170,6 +170,20 @@ The server surface: the context family, and the types a plugin must be able to n
   Thrown when a run reuses a step name — see rule 1.
 - `function durableObject<T extends Rpc.DurableObjectBranded \| undefined = undefined>( namespace: DurableObjectNamespace<T>, tenantId: string, key?: string ): DurableObjectStub<T>`
   A Durable Object stub for one tenant, **with the tenant prefix built here rather than by the caller** (D31).
+- `const EMAIL_CATCH_ALL: "*"`
+  The catch-all local part.
+- `type EmailContext = TaskContext`
+  What an email handler is given — the cron's context, for the same reasons.
+- `function emailCtx(ctx: EmailContext): EmailCtx`
+  Adapt the kit's `EmailContext`. The only place a plugin's email half names a kit internal.
+- `interface EmailCtx extends PluginContext, BackgroundMethods`
+  One inbound message's context.
+  - `waitUntil(promise: Promise<unknown>): void`
+- `interface EmailHandler`
+- `function emailLocalPart(address: string): string`
+  `Receipts+Proton@Example.com` → `receipts`. Lower-cased (local parts are case-insensitive in practice, and Email Routing matches them that way) and cut at the first `+`, which is…
+- `function emailSubaddress(address: string): string \| null`
+  `receipts+proton@example.com` → `proton`; null when the address carries no tag.
 - `function hasFeature(auth: Pick<PluginAuth, 'features'>, name: string): boolean`
   `true` when this deployment ships the surface AND this organisation has it yet.
 - `interface HookCtx extends Pick<PluginContext, 'db'>`
@@ -389,6 +403,8 @@ The server surface: the context family, and the types a plugin must be able to n
     Tools added to every agent run, beside the kit's three knowledge tools. Bound to the run's access scope, so a plugin tool reads what its REQUESTER may read and nothing more. May…
   - `scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>`
     Cron expression → tasks, merged into `SCHEDULED_TASKS` (tasks on a cron the kit already runs are appended after the kit's). A cron the kit does NOT run must also be added to…
+  - `emailHandlers?: readonly EmailHandler[]`
+    Inbound email (Cloudflare Email Routing → the Worker's `email` handler), merged into `EMAIL_HANDLERS` in `api/email.ts` and matched on the recipient's local part (`receipts` takes…
   - `grants?: Partial<Record<EffectiveRole, RoleGrant>>`
     Per-role CASL rules, applied after the kit's own matrix — additive, never a replacement.
   - `rlsExcludedTables?: readonly string[]`
@@ -710,6 +726,8 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
     Tools added to every agent run, beside the kit's three knowledge tools. Bound to the run's access scope, so a plugin tool reads what its REQUESTER may read and nothing more. May…
   - `scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>`
     Cron expression → tasks, merged into `SCHEDULED_TASKS` (tasks on a cron the kit already runs are appended after the kit's). A cron the kit does NOT run must also be added to…
+  - `emailHandlers?: readonly EmailHandler[]`
+    Inbound email (Cloudflare Email Routing → the Worker's `email` handler), merged into `EMAIL_HANDLERS` in `api/email.ts` and matched on the recipient's local part (`receipts` takes…
   - `grants?: Partial<Record<EffectiveRole, RoleGrant>>`
     Per-role CASL rules, applied after the kit's own matrix — additive, never a replacement.
   - `rlsExcludedTables?: readonly string[]`
@@ -1061,6 +1079,14 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: DetachedCtx.groups :: groups: readonly GroupRef[]
 @/plugins/api :: class :: DuplicateStepNameError :: class DuplicateStepNameError extends Error
 @/plugins/api :: function :: durableObject :: function durableObject<T extends Rpc.DurableObjectBranded | undefined = undefined>( namespace: DurableObjectNamespace<T>, tenantId: string, key?: string ): DurableObjectStub<T>
+@/plugins/api :: const :: EMAIL_CATCH_ALL :: const EMAIL_CATCH_ALL: "*"
+@/plugins/api :: type :: EmailContext :: type EmailContext = TaskContext
+@/plugins/api :: function :: emailCtx :: function emailCtx(ctx: EmailContext): EmailCtx
+@/plugins/api :: interface :: EmailCtx :: interface EmailCtx extends PluginContext, BackgroundMethods
+@/plugins/api :: member :: EmailCtx.waitUntil :: waitUntil(promise: Promise<unknown>): void
+@/plugins/api :: interface :: EmailHandler :: interface EmailHandler
+@/plugins/api :: function :: emailLocalPart :: function emailLocalPart(address: string): string
+@/plugins/api :: function :: emailSubaddress :: function emailSubaddress(address: string): string | null
 @/plugins/api :: function :: hasFeature :: function hasFeature(auth: Pick<PluginAuth, 'features'>, name: string): boolean
 @/plugins/api :: interface :: HookCtx :: interface HookCtx extends Pick<PluginContext, 'db'>
 @/plugins/api :: member :: HookCtx.tenant :: tenant: Tenant
@@ -1195,6 +1221,7 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: ServerPlugin.prompts :: prompts?: { [K in PromptKeyOf<S> & string]: PromptDefinition }
 @/plugins/api :: member :: ServerPlugin.agentTools :: agentTools?: (ctx: AgentToolContext) => Tool[] | Promise<Tool[]>
 @/plugins/api :: member :: ServerPlugin.scheduledTasks :: scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>
+@/plugins/api :: member :: ServerPlugin.emailHandlers :: emailHandlers?: readonly EmailHandler[]
 @/plugins/api :: member :: ServerPlugin.grants :: grants?: Partial<Record<EffectiveRole, RoleGrant>>
 @/plugins/api :: member :: ServerPlugin.rlsExcludedTables :: rlsExcludedTables?: readonly string[]
 @/plugins/api :: member :: ServerPlugin.unscopedAllowlist :: unscopedAllowlist?: Readonly<Record<string, string>>
@@ -1380,6 +1407,7 @@ nothing in the comparison that can throw.
 @/plugins/types :: member :: ServerPlugin.prompts :: prompts?: { [K in PromptKeyOf<S> & string]: PromptDefinition }
 @/plugins/types :: member :: ServerPlugin.agentTools :: agentTools?: (ctx: AgentToolContext) => Tool[] | Promise<Tool[]>
 @/plugins/types :: member :: ServerPlugin.scheduledTasks :: scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>
+@/plugins/types :: member :: ServerPlugin.emailHandlers :: emailHandlers?: readonly EmailHandler[]
 @/plugins/types :: member :: ServerPlugin.grants :: grants?: Partial<Record<EffectiveRole, RoleGrant>>
 @/plugins/types :: member :: ServerPlugin.rlsExcludedTables :: rlsExcludedTables?: readonly string[]
 @/plugins/types :: member :: ServerPlugin.unscopedAllowlist :: unscopedAllowlist?: Readonly<Record<string, string>>

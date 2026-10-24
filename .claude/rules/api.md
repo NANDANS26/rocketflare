@@ -9,7 +9,7 @@ paths:
 # API Patterns
 
 Hono app assembled in `apps/web/src/api/index.ts` (exports `app` only). `apps/web/src/worker.ts` is the Worker entry:
-`export default { fetch, queue, scheduled }` plus the DO/Workflow class exports. Keeping the classes
+`export default { fetch, queue, scheduled, email }` plus the DO/Workflow class exports. Keeping the classes
 out of `api/index.ts` is what lets tests drive `app.request(req, env, ctx)` under Node.
 
 ## Middleware order (do not reorder casually — 04 §10)

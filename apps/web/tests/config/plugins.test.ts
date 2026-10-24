@@ -40,6 +40,7 @@ import { queryKeys } from '@/ui/lib/query-keys'
 import {
   DECLARED_ENTRIES,
   deepImportIssue,
+  emailHandlerIssues,
   isPluginEntry,
   isPluginFile,
   PLUGIN_IMPORT_ENFORCEMENT,
@@ -313,6 +314,28 @@ describe('installed plugins', () => {
       )
     )
     expect(issues).toEqual([])
+  })
+
+  it('claims each inbound email local part at most once', () => {
+    const issues = emailHandlerIssues(
+      serverPlugins.map(p => ({
+        id: p.shared.id,
+        localParts: (p.emailHandlers ?? []).map(h => h.localPart),
+      }))
+    )
+    expect(issues).toEqual([])
+    // The rule itself, on a fixture: a kit with no email plugin installed proves nothing above.
+    expect(
+      emailHandlerIssues([
+        { id: 'a', localParts: ['receipts', '*'] },
+        { id: 'b', localParts: ['receipts', 'Bills', 'x+y', '*'] },
+      ])
+    ).toEqual([
+      "b: email local part 'receipts' is already handled by a",
+      "b: email local part 'Bills' must be lower-case with no '+', '@' or space",
+      "b: email local part 'x+y' must be lower-case with no '+', '@' or space",
+      "b: email local part '*' is already handled by a",
+    ])
   })
 
   it('namespaces every query-key root it declares', () => {
