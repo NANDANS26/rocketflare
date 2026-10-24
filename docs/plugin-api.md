@@ -445,6 +445,9 @@ The server surface: the context family, and the types a plugin must be able to n
   - `send(event: RealtimeEvent): Promise<void>`
   - `sendToUser(userId: string, event: RealtimeEvent): Promise<void>`
   - `sendToUsers(userIds: string[], event: RealtimeEvent): Promise<void>`
+- `interface StorageService`
+- `interface StoredObject extends StoredObjectMeta`
+- `interface StoredObjectMeta`
 - `type Subjects = CoreSubject \| PluginSubject \| FeatureSubject`
 - `type Tenant = typeof tenants.$inferSelect`
 - `interface Tool<Input = unknown>`
@@ -1001,6 +1004,8 @@ Builders for the context family, for tests that never touch data.
 - `type FakeWorkflowCtx = WorkflowCtx & { readonly recorded: ReturnType<typeof createFakeWorkflowStep> }`
   The fake step recorder, so a test can assert the NAMES a run asked for and their order.
 - `function makeCronCtx(options: CronCtxOptions): CronCtx`
+- `function makeEmailCtx(options: CronCtxOptions): EmailCtx`
+  One inbound message's context (`emailHandlers`), through the kit's own `emailCtx` adapter.
 - `function makeJobCtx(options: BaseOptions): JobCtx`
   One queue message's context, through the kit's own `jobCtx` adapter.
 - `function makeRequestCtx(options: RequestCtxOptions): FakeRequestCtx`
@@ -1248,6 +1253,9 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: StepRealtime.send :: send(event: RealtimeEvent): Promise<void>
 @/plugins/api :: member :: StepRealtime.sendToUser :: sendToUser(userId: string, event: RealtimeEvent): Promise<void>
 @/plugins/api :: member :: StepRealtime.sendToUsers :: sendToUsers(userIds: string[], event: RealtimeEvent): Promise<void>
+@/plugins/api :: interface :: StorageService :: interface StorageService
+@/plugins/api :: interface :: StoredObject :: interface StoredObject extends StoredObjectMeta
+@/plugins/api :: interface :: StoredObjectMeta :: interface StoredObjectMeta
 @/plugins/api :: type :: Subjects :: type Subjects = CoreSubject | PluginSubject | FeatureSubject
 @/plugins/api :: type :: Tenant :: type Tenant = typeof tenants.$inferSelect
 @/plugins/api :: interface :: Tool :: interface Tool<Input = unknown>
@@ -1561,6 +1569,7 @@ nothing in the comparison that can throw.
 @testkit/unit :: type :: FakeRequestCtx :: type FakeRequestCtx = RequestCtx & { readonly deferred: ReadonlyArray<() => Promise<unknown>> settle(): Promise<void> }
 @testkit/unit :: type :: FakeWorkflowCtx :: type FakeWorkflowCtx = WorkflowCtx & { readonly recorded: ReturnType<typeof createFakeWorkflowStep> }
 @testkit/unit :: function :: makeCronCtx :: function makeCronCtx(options: CronCtxOptions): CronCtx
+@testkit/unit :: function :: makeEmailCtx :: function makeEmailCtx(options: CronCtxOptions): EmailCtx
 @testkit/unit :: function :: makeJobCtx :: function makeJobCtx(options: BaseOptions): JobCtx
 @testkit/unit :: function :: makeRequestCtx :: function makeRequestCtx(options: RequestCtxOptions): FakeRequestCtx
 @testkit/unit :: function :: makeToolCtx :: function makeToolCtx(options: ToolCtxOptions): ToolCtx

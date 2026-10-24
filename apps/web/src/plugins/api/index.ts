@@ -144,6 +144,9 @@ export type {
   PluginConfig,
   PluginContext,
   PluginLogger,
+  StorageService,
+  StoredObject,
+  StoredObjectMeta,
 } from './types'
 export type { StepCtx, StepOptions, WorkflowCtx } from './workflow'
 export { DuplicateStepNameError, workflowCtx } from './workflow'

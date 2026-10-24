@@ -901,8 +901,8 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
   checks, tenant resolution and storage; it should store, write a row and enqueue. Routing an
   address to the Worker is a per-zone dashboard step. `plugins.test.ts` refuses two plugins
   claiming one local part.
-- **Background feature checks (D34)**: `JobCtx`, `CronCtx` and `PublicCtx` carry
-  `features(tenantId)` — the same resolution as `auth.features`, with no user, so a cron that fans
+- **Background feature checks (D34)**: `JobCtx`, `CronCtx`, `PublicCtx` and `EmailCtx` carry
+  `storage()` (R2 under `tenants/<id>/<plugin id>/…`, purged with the tenant) and `features(tenantId)` — the same resolution as `auth.features`, with no user, so a cron that fans
   out across tenants can skip the ones whose flag is off.
 - **Knowledge ingest (D34)**: `ingestDocument` / `ingestDocumentFile` / `deleteIngestedDocument`
   over the kit's ingest paths (§9). With an `externalId`, the same `(tenant, source, externalId)`

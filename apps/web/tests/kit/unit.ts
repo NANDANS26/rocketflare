@@ -47,6 +47,8 @@ import type { AccessScope } from '@/plugins/api'
 import { durableObject, nudgeEntity } from '@/plugins/api'
 import type { ToolCtx } from '@/plugins/api/ai'
 import { toolCtx } from '@/plugins/api/ai'
+import type { EmailCtx } from '@/plugins/api/email'
+import { emailCtx } from '@/plugins/api/email'
 import type { RequestCtx } from '@/plugins/api/http'
 import type { CronCtx, JobCtx } from '@/plugins/api/jobs'
 import { cronCtx, jobCtx } from '@/plugins/api/jobs'
@@ -329,6 +331,19 @@ export function makeCronCtx(options: CronCtxOptions): CronCtx {
   const { db, env, config, logger } = baseParts(options, 'makeCronCtx')
   const pending: Promise<unknown>[] = []
   return cronCtx({
+    db,
+    env,
+    config,
+    logger: logger as Logger,
+    waitUntil: options.waitUntil ?? (p => pending.push(p)),
+  })
+}
+
+/** One inbound message's context (`emailHandlers`), through the kit's own `emailCtx` adapter. */
+export function makeEmailCtx(options: CronCtxOptions): EmailCtx {
+  const { db, env, config, logger } = baseParts(options, 'makeEmailCtx')
+  const pending: Promise<unknown>[] = []
+  return emailCtx({
     db,
     env,
     config,

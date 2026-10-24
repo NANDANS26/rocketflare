@@ -17,6 +17,7 @@ Agent tool calls now run concurrently under a configurable cap, and plugins can 
 
 - `meta.policy` (`agentPolicySchema`) gains `maxConcurrentToolCalls` (default 4; cap 1 is sequential), executed concurrently by `runToolLoop` with events, transcript results and error handling preserved in model order (issue #4).
 - `ServerPlugin.emailHandlers` routes Cloudflare Email Routing mail to a plugin by recipient local part (`*` catch-all) via `apps/web/src/api/email.ts`; plugins adapt the context with `emailCtx` from `@/plugins/api` ([CONCEPTS §16](../CONCEPTS.md#16-plugins)).
+- `JobCtx`, `CronCtx`, `PublicCtx` and `EmailCtx` gain `storage()` (the `FILES` bucket, as `RequestCtx.storage()`), `@testkit/unit` gains `makeEmailCtx`, and `@/plugins/api` exports the `StorageService` type.
 
 ## How to apply
 
@@ -27,7 +28,8 @@ Agent tool calls now run concurrently under a configurable cap, and plugins can 
 5. Add the optional `emailHandlers?: readonly EmailHandler[]` field to `ServerPlugin` in `apps/web/src/plugins/types.ts`, importing the `EmailHandler` type from `../api/email`.
 6. Copy `apps/web/src/plugins/api/email.ts` from the kit and add its exports (`EmailContext`, `EmailCtx`, `EmailHandler`, `EMAIL_CATCH_ALL`, `emailCtx`, `emailLocalPart`, `emailSubaddress`) to `apps/web/src/plugins/api/index.ts`, then run `node scripts/plugin-api-doc.mjs`.
 7. Copy `apps/web/tests/api/email-inbound.test.ts`, the `emailHandlerIssues` helper in `apps/web/tests/helpers/plugins.ts` and its case in `apps/web/tests/config/plugins.test.ts` from the kit.
-8. Nothing to do for Email Routing until a plugin with `emailHandlers` is installed; `docs/DEPLOY.md` § Inbound email describes the per-zone routing rule that plugin needs.
+8. Add `storage()` to `BackgroundMethods` and `backgroundMethods()` in `apps/web/src/plugins/api/jobs.ts` (copy from the kit), re-export `StorageService`, `StoredObject` and `StoredObjectMeta` from `apps/web/src/plugins/api/types.ts` and `index.ts`, and copy `makeEmailCtx` into `apps/web/tests/kit/unit.ts`.
+9. Nothing to do for Email Routing until a plugin with `emailHandlers` is installed; `docs/DEPLOY.md` § Inbound email describes the per-zone routing rule that plugin needs.
 
 ## Conflicts to expect
 
