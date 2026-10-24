@@ -108,6 +108,9 @@ export type {
   JobOf,
   JobType,
   ScheduledTask,
+  StartAgentRun,
+  StartAgentRunInput,
+  StartedAgentRun,
 } from './jobs'
 export { cronCtx, jobCtx } from './jobs'
 export type {

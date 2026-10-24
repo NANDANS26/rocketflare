@@ -36,7 +36,7 @@ import type { AccessScope } from '../../api/services/access-sql'
 import { accessScopeOf } from '../../api/services/access-sql'
 import { enqueueJob, enqueueJobs } from '../../api/services/jobs'
 import type { Realtime } from '../../api/services/realtime'
-import { createR2Storage, type StorageService } from '../../api/services/storage'
+import type { StorageService } from '../../api/services/storage'
 import type { AppContext } from '../../api/types'
 import {
   BadRequestError,
@@ -52,6 +52,7 @@ import { createRouter } from '../../api/utils/routes/router'
 import { validate } from '../../api/utils/routes/validate'
 import { isAdminLevel, isGlobalAdmin, isOwnerLevel, type PluginAuth } from './auth'
 import { durableObject, nudgeEntity } from './events'
+import { filesStorage } from './storage'
 import type { PluginContext } from './types'
 
 export type { AppRouter } from '../../api/utils/routes/router'
@@ -321,15 +322,7 @@ export function requestCtx(c: AppContext): RequestCtx {
       await enqueueJobs(c.env.JOBS_QUEUE, inputs, options)
     },
     nudge: (entity, id) => nudgeEntity(route.realtime, route.tenantId, entity, id),
-    storage: () => {
-      if (!c.env.FILES) {
-        throw new ServiceUnavailableError(
-          'File storage is not configured',
-          'storage_not_configured'
-        )
-      }
-      return createR2Storage(c.env.FILES)
-    },
+    storage: () => filesStorage(c.env),
     durableObject: (namespace, key) => durableObject(namespace, route.tenantId, key),
 
     notFound: (message = 'Not found', code = ERROR_CODES.notFound) => {
