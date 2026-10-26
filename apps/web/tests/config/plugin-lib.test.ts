@@ -47,10 +47,12 @@ import {
   dependencyClashes,
   dependencyDelta,
   describeClash,
+  findProjectTsconfig,
   hasBarrelLine,
   isolationEvidence,
   isVendored,
   jsonKeyLine,
+  loadProjectCompilerOptions,
   missingDependencies,
   newlyAddedDependencies,
   nextAddedDependencies,
@@ -1393,8 +1395,8 @@ describe('the audit', () => {
     expect(isolationEvidence(stringOnly).secondTenant).toBe(false)
   })
 
-  it('fails closed when TypeScript cannot resolve dependencies (TS2307)', () => {
-    // Unresolved dependency must produce TS2307 diagnostic and fail closed
+  it('fails closed when TypeScript cannot resolve dependencies', () => {
+    // Unresolved dependency must produce unresolved import results and fail closed
     const bad = unresolvedPluginImports({
       'apps/web/src/plugins/broken-plugin/index.ts': [
         'import { something } from "completely-nonexistent-package"',
@@ -1402,8 +1404,12 @@ describe('the audit', () => {
       ].join('\n'),
     })
     expect(bad.length).toBeGreaterThan(0)
-    expect(bad.some(d => d.code === 2307)).toBe(true)
-    expect(bad.some(d => d.message.includes('completely-nonexistent-package'))).toBe(true)
+    expect(bad[0].specifier).toBe('completely-nonexistent-package')
+    expect(bad[0].line).toBe(1)
+    expect(bad[0].file).toBe('apps/web/src/plugins/broken-plugin/index.ts')
+    expect(bad[0].message).toContain('completely-nonexistent-package')
+    // Must not be labelled as a genuine TS2307 diagnostic
+    expect((bad[0] as unknown as Record<string, unknown>).code).toBeUndefined()
 
     // Valid dependency resolves cleanly
     const good = unresolvedPluginImports({
@@ -1418,13 +1424,126 @@ describe('the audit', () => {
     })
     expect(good).toEqual([])
 
-    // Non-existent asset import fails with TS2307
+    // Non-existent asset import fails
     const missingAsset = unresolvedPluginImports({
       'apps/web/src/plugins/valid-plugin/index.ts': 'import "./missing-style.css"',
     })
-    expect(missingAsset.some(d => d.code === 2307 && d.message.includes('missing-style.css'))).toBe(
-      true
+    expect(
+      missingAsset.some(
+        d => d.specifier === './missing-style.css' && d.message.includes('missing-style.css')
+      )
+    ).toBe(true)
+  })
+
+  it('supports Vite query imports like ?raw and ?url when target files exist, and fails when missing', () => {
+    const validWithQueries = unresolvedPluginImports({
+      'apps/web/src/plugins/query-plugin/index.ts': [
+        'import text from "./prompt.txt?raw"',
+        'import url from "./icon.svg?url"',
+        'import worker from "./task.ts?worker"',
+        'export const prompt = text',
+      ].join('\n'),
+      'apps/web/src/plugins/query-plugin/prompt.txt': 'You are a helpful assistant.',
+      'apps/web/src/plugins/query-plugin/icon.svg': '<svg></svg>',
+      'apps/web/src/plugins/query-plugin/task.ts': 'export const run = () => {};',
+    })
+    expect(validWithQueries).toEqual([])
+
+    // Truly missing Vite query imports must still fail
+    const missingRaw = unresolvedPluginImports({
+      'apps/web/src/plugins/query-plugin/index.ts': 'import text from "./missing-prompt.txt?raw"',
+    })
+    expect(missingRaw.some(d => d.specifier === './missing-prompt.txt?raw')).toBe(true)
+
+    const missingUrl = unresolvedPluginImports({
+      'apps/web/src/plugins/query-plugin/index.ts': 'import url from "./missing-icon.svg?url"',
+    })
+    expect(missingUrl.some(d => d.specifier === './missing-icon.svg?url')).toBe(true)
+
+    const missingPkgRaw = unresolvedPluginImports({
+      'apps/web/src/plugins/query-plugin/index.ts':
+        'import text from "completely-nonexistent-package?raw"',
+    })
+    expect(missingPkgRaw.some(d => d.specifier === 'completely-nonexistent-package?raw')).toBe(true)
+  })
+
+  it('determines project configuration and resolves imports per project (web, cli, shared)', () => {
+    // findProjectTsconfig maps files to their containing project's tsconfig
+    expect(findProjectTsconfig('apps/web/src/plugins/foo/index.ts')).toMatch(
+      /apps[/\\]web[/\\]tsconfig\.json$/
     )
+    expect(findProjectTsconfig('apps/cli/src/plugins/foo/index.ts')).toMatch(
+      /apps[/\\]cli[/\\]tsconfig\.json$/
+    )
+    expect(findProjectTsconfig('packages/shared/src/plugins/foo/index.ts')).toMatch(
+      /packages[/\\]shared[/\\]tsconfig\.json$/
+    )
+
+    // loadProjectCompilerOptions loads resolved tsconfig options with baseUrl and path aliases
+    const webOpts = loadProjectCompilerOptions('apps/web/tsconfig.json')
+    expect(webOpts.paths).toBeDefined()
+    expect(webOpts.paths?.['@/*']).toEqual(['src/*'])
+    expect(webOpts.baseUrl).toMatch(/apps[/\\]web$/)
+
+    // Relative imports resolve in their respective project contexts
+    const validCliAndShared = unresolvedPluginImports({
+      'apps/cli/src/plugins/my-cli/index.ts': [
+        'import { helper } from "./helper"',
+        'export const run = helper()',
+      ].join('\n'),
+      'apps/cli/src/plugins/my-cli/helper.ts': 'export const helper = () => "ok";',
+      'packages/shared/src/plugins/my-shared/index.ts': [
+        'import { sharedUtil } from "./util"',
+        'export const val = sharedUtil',
+      ].join('\n'),
+      'packages/shared/src/plugins/my-shared/util.ts': 'export const sharedUtil = 42;',
+    })
+    expect(validCliAndShared).toEqual([])
+
+    // apps/cli does not have @/* alias configured; web alias must not leak to cli
+    const invalidCliAlias = unresolvedPluginImports({
+      'apps/cli/src/plugins/my-cli/index.ts': 'import { something } from "@/some-web-module"',
+    })
+    expect(invalidCliAlias.some(d => d.specifier === '@/some-web-module')).toBe(true)
+
+    // packages/shared does not have @/* alias configured
+    const invalidSharedAlias = unresolvedPluginImports({
+      'packages/shared/src/plugins/my-shared/index.ts':
+        'import { something } from "@/some-web-module"',
+    })
+    expect(invalidSharedAlias.some(d => d.specifier === '@/some-web-module')).toBe(true)
+  })
+
+  it('handles configuration-reading and parsing errors clearly', () => {
+    // Non-existent tsconfig throws clear error
+    expect(() => loadProjectCompilerOptions('nonexistent-path/tsconfig.json')).toThrow(
+      /TypeScript configuration not found/
+    )
+
+    // Malformed JSON tsconfig throws clear error
+    const tmpBad = path.resolve('bad-syntax-tsconfig.json').replace(/\\/g, '/')
+    writeFileSync(tmpBad, '{ invalid json')
+    try {
+      expect(() => loadProjectCompilerOptions(tmpBad)).toThrow(
+        /Failed to read TypeScript configuration/
+      )
+    } finally {
+      rmSync(tmpBad, { force: true })
+    }
+
+    // Invalid compiler options throw clear error
+    const tmpBadOptions = path.resolve('bad-options-tsconfig.json').replace(/\\/g, '/')
+    writeFileSync(
+      tmpBadOptions,
+      JSON.stringify({ compilerOptions: { target: 'invalid-target-value' } })
+    )
+    try {
+      expect(() => loadProjectCompilerOptions(tmpBadOptions)).toThrow(
+        /Failed to parse TypeScript configuration/
+      )
+    } finally {
+      rmSync(tmpBadOptions, { force: true })
+    }
   })
 
   /**

@@ -315,22 +315,28 @@ export function isolationEvidence(source: string, fileName?: string): IsolationE
  */
 export function declaresProperty(source: string, name: string, fileName?: string): boolean
 
-export interface UnresolvedImportDiagnostic {
+export interface UnresolvedPluginImport {
   file: string
   line: number | null
-  code: number
+  specifier: string
   message: string
 }
 
-export function buildPluginProgram(
-  files: string[] | Record<string, string>,
-  options?: { repoRoot?: string; compilerOptions?: Record<string, unknown> }
-): import('typescript').Program
+export function loadProjectCompilerOptions(
+  tsconfigPath: string,
+  options?: { ts?: typeof import('typescript') }
+): import('typescript').CompilerOptions
+
+export function findProjectTsconfig(filePath: string, repoRoot?: string): string
 
 export function unresolvedPluginImports(
   files: string[] | Record<string, string>,
-  options?: { repoRoot?: string; compilerOptions?: Record<string, unknown> }
-): UnresolvedImportDiagnostic[]
+  options?: {
+    repoRoot?: string
+    tsconfigPath?: string
+    compilerOptions?: Record<string, unknown>
+  }
+): UnresolvedPluginImport[]
 
 export function resolveSubdir(input: {
   flag?: string | null

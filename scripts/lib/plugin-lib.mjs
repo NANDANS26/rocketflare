@@ -1857,86 +1857,10 @@ export function declaresProperty(source, name, fileName = 'file.ts') {
   }
 }
 
-/**
- * Builds a TypeScript program for plugin files or virtual fixtures.
- *
- * Configured with the project's baseUrl and paths (@/*, @testkit/*) so that
- * declared host entries and dependencies resolve accurately, failing closed if
- * node_modules or dependencies are missing.
- */
-export function buildPluginProgram(files, options = {}) {
-  const ts = typescript()
-  const repoRoot = options.repoRoot ?? REPO_ROOT
-
-  if (!fs.existsSync(path.join(repoRoot, 'node_modules'))) {
-    throw new Error(
-      'node_modules is missing — run `pnpm install` first, or every type reads as `any`'
-    )
-  }
-
-  const compilerOptions = {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    jsx: ts.JsxEmit.ReactJSX,
-    strict: true,
-    skipLibCheck: true,
-    esModuleInterop: true,
-    allowImportingTsExtensions: true,
-    resolveJsonModule: true,
-    noEmit: true,
-    baseUrl: path.join(repoRoot, 'apps/web'),
-    paths: { '@/*': ['src/*'], '@testkit/*': ['tests/kit/*'] },
-    types: ['node'],
-    ...(options.compilerOptions ?? {}),
-  }
-
-  const isVirtual = typeof files === 'object' && !Array.isArray(files) && files !== null
-  const baseHost = ts.createCompilerHost(compilerOptions)
-
-  let host = baseHost
-  let fileList = []
-
-  if (isVirtual) {
-    const virtualMap = new Map()
-    for (const [filePath, content] of Object.entries(files)) {
-      const norm = path.resolve(repoRoot, filePath)
-      virtualMap.set(norm, String(content))
-      fileList.push(norm)
-    }
-
-    host = {
-      ...baseHost,
-      getSourceFile: (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
-        const norm = path.resolve(fileName)
-        if (virtualMap.has(norm)) {
-          return ts.createSourceFile(norm, virtualMap.get(norm), languageVersion, true)
-        }
-        return baseHost.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
-      },
-      fileExists: fileName => {
-        const norm = path.resolve(fileName)
-        if (virtualMap.has(norm)) return true
-        return baseHost.fileExists(fileName)
-      },
-      readFile: fileName => {
-        const norm = path.resolve(fileName)
-        if (virtualMap.has(norm)) return virtualMap.get(norm)
-        return baseHost.readFile(fileName)
-      },
-    }
-  } else {
-    fileList = (files ?? []).map(f => path.resolve(repoRoot, f))
-  }
-
-  const globals = path.join(repoRoot, 'apps/web/worker-configuration.d.ts')
-  if (fs.existsSync(globals)) fileList.push(globals)
-
-  return ts.createProgram(fileList, compilerOptions, host)
-}
-
 const ASSET_SPECIFIER_RE =
   /\.(css|scss|sass|less|styl|stylus|pcss|sss|svg|png|jpe?g|gif|webp|avif|ico|bmp|wasm)($|\?)/i
+
+const VITE_QUERY_RE = /^[?&](raw|url|worker|inline)($|[?&=])/
 
 const WORKERD_AMBIENT_MODULES = new Set([
   'cloudflare:workers',
@@ -1950,7 +1874,158 @@ const WORKERD_AMBIENT_MODULES = new Set([
 ])
 
 /**
- * Checks for unresolved imports and dependencies (such as TS2307) across plugin files.
+ * Loads and parses TypeScript compiler options from a tsconfig.json file.
+ *
+ * Uses ts.readConfigFile and ts.parseJsonConfigFileContent so inherited settings,
+ * base URLs, path aliases, and module resolution match project configuration.
+ */
+export function loadProjectCompilerOptions(tsconfigPath, options = {}) {
+  const ts = options.ts ?? typescript()
+  const baseDir = options.repoRoot ?? REPO_ROOT
+  const absPath = path.isAbsolute(tsconfigPath)
+    ? tsconfigPath
+    : fs.existsSync(path.resolve(tsconfigPath))
+      ? path.resolve(tsconfigPath)
+      : path.resolve(baseDir, tsconfigPath)
+  const normPath = absPath.replace(/\\/g, '/')
+  if (!fs.existsSync(normPath)) {
+    throw new Error(`TypeScript configuration not found at '${normPath}'`)
+  }
+
+  const readResult = ts.readConfigFile(normPath, ts.sys.readFile)
+  if (readResult.error) {
+    const msg = ts.flattenDiagnosticMessageText
+      ? ts.flattenDiagnosticMessageText(readResult.error.messageText, '\n')
+      : String(readResult.error.messageText ?? readResult.error)
+    throw new Error(`Failed to read TypeScript configuration at '${normPath}': ${msg}`)
+  }
+
+  const parsed = ts.parseJsonConfigFileContent(
+    readResult.config,
+    ts.sys,
+    path.dirname(normPath).replace(/\\/g, '/')
+  )
+  if (parsed.errors && parsed.errors.length > 0) {
+    const fatal = parsed.errors.filter(e => e.category === ts.DiagnosticCategory.Error)
+    if (fatal.length > 0) {
+      const msg = fatal
+        .map(e =>
+          ts.flattenDiagnosticMessageText
+            ? ts.flattenDiagnosticMessageText(e.messageText, '\n')
+            : String(e.messageText ?? e)
+        )
+        .join('; ')
+      throw new Error(`Failed to parse TypeScript configuration at '${normPath}': ${msg}`)
+    }
+  }
+
+  return parsed.options
+}
+
+/**
+ * Determines the appropriate tsconfig.json for a given file by walking up from the
+ * file's directory to the repository root. Defaults to apps/web/tsconfig.json.
+ */
+export function findProjectTsconfig(filePath, repoRoot = REPO_ROOT) {
+  const normFile = path.resolve(repoRoot, filePath).replace(/\\/g, '/')
+  let dir = path.dirname(normFile)
+  const resolvedRepoRoot = path.resolve(repoRoot).replace(/\\/g, '/')
+
+  while (dir.startsWith(resolvedRepoRoot)) {
+    const candidate = path.posix.join(dir, 'tsconfig.json')
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+    const parent = path.posix.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+
+  const webConfig = path.posix.join(resolvedRepoRoot, 'apps/web/tsconfig.json')
+  if (fs.existsSync(webConfig)) return webConfig
+
+  const rootConfig = path.posix.join(resolvedRepoRoot, 'tsconfig.json')
+  if (fs.existsSync(rootConfig)) return rootConfig
+  const baseConfig = path.posix.join(resolvedRepoRoot, 'tsconfig.base.json')
+  if (fs.existsSync(baseConfig)) return baseConfig
+
+  return webConfig
+}
+
+/**
+ * Resolves a module specifier against path aliases defined in compilerOptions.paths.
+ */
+function resolvePathAlias(specifier, compilerOptions) {
+  if (!compilerOptions.paths) return []
+  const baseUrl = compilerOptions.baseUrl ?? '.'
+  const matches = []
+  for (const [pattern, substitutions] of Object.entries(compilerOptions.paths)) {
+    const starIdx = pattern.indexOf('*')
+    if (starIdx === -1) {
+      if (specifier === pattern) {
+        for (const sub of substitutions) {
+          matches.push(path.resolve(baseUrl, sub))
+        }
+      }
+    } else {
+      const prefix = pattern.slice(0, starIdx)
+      const suffix = pattern.slice(starIdx + 1)
+      if (specifier.startsWith(prefix) && specifier.endsWith(suffix)) {
+        const matched = specifier.slice(prefix.length, specifier.length - suffix.length)
+        for (const sub of substitutions) {
+          matches.push(path.resolve(baseUrl, sub.replace('*', matched)))
+        }
+      }
+    }
+  }
+  return matches
+}
+
+function fileOrHostExists(filePath, host, isVirtual, virtualMap) {
+  const norm = path.resolve(filePath)
+  if (isVirtual && virtualMap && virtualMap.has(norm)) return true
+  return (
+    fs.existsSync(norm) || (host && typeof host.fileExists === 'function' && host.fileExists(norm))
+  )
+}
+
+function makeHost(compilerOptions, virtualMap, ts) {
+  const baseHost = ts.createCompilerHost(compilerOptions)
+  if (!virtualMap || virtualMap.size === 0) return baseHost
+
+  return {
+    ...baseHost,
+    getSourceFile: (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+      const norm = path.resolve(fileName)
+      if (virtualMap.has(norm)) {
+        return ts.createSourceFile(norm, virtualMap.get(norm), languageVersion, true)
+      }
+      return baseHost.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
+    },
+    fileExists: fileName => {
+      const norm = path.resolve(fileName)
+      if (virtualMap.has(norm)) return true
+      return baseHost.fileExists(fileName)
+    },
+    directoryExists: directoryName => {
+      const norm = path.resolve(directoryName)
+      for (const k of virtualMap.keys()) {
+        if (k.startsWith(norm + path.sep) || k.startsWith(norm + '/')) return true
+      }
+      return typeof baseHost.directoryExists === 'function'
+        ? baseHost.directoryExists(directoryName)
+        : true
+    },
+    readFile: fileName => {
+      const norm = path.resolve(fileName)
+      if (virtualMap.has(norm)) return virtualMap.get(norm)
+      return baseHost.readFile(fileName)
+    },
+  }
+}
+
+/**
+ * Checks for unresolved imports across plugin files.
  *
  * When dependencies cannot resolve, TypeScript degrades types to `any`, causing false
  * passes on type-level checks. This fails closed explicitly when any import cannot resolve.
@@ -1964,32 +2039,13 @@ export function unresolvedPluginImports(files, options = {}) {
       {
         file: 'node_modules',
         line: null,
-        code: 2307,
+        specifier: 'node_modules',
         message: 'node_modules is missing — run `pnpm install` first, or every type reads as `any`',
       },
     ]
   }
 
   const isVirtual = typeof files === 'object' && !Array.isArray(files) && files !== null
-  const compilerOptions = {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    jsx: ts.JsxEmit.ReactJSX,
-    strict: true,
-    skipLibCheck: true,
-    esModuleInterop: true,
-    allowImportingTsExtensions: true,
-    resolveJsonModule: true,
-    noEmit: true,
-    baseUrl: path.join(repoRoot, 'apps/web'),
-    paths: { '@/*': ['src/*'], '@testkit/*': ['tests/kit/*'] },
-    types: ['node'],
-    ...(options.compilerOptions ?? {}),
-  }
-
-  const baseHost = ts.createCompilerHost(compilerOptions)
-  let host = baseHost
   const virtualMap = new Map()
 
   if (isVirtual) {
@@ -1997,30 +2053,30 @@ export function unresolvedPluginImports(files, options = {}) {
       const norm = path.resolve(repoRoot, filePath)
       virtualMap.set(norm, String(content))
     }
-    host = {
-      ...baseHost,
-      getSourceFile: (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
-        const norm = path.resolve(fileName)
-        if (virtualMap.has(norm)) {
-          return ts.createSourceFile(norm, virtualMap.get(norm), languageVersion, true)
-        }
-        return baseHost.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
-      },
-      fileExists: fileName => {
-        const norm = path.resolve(fileName)
-        if (virtualMap.has(norm)) return true
-        return baseHost.fileExists(fileName)
-      },
-      readFile: fileName => {
-        const norm = path.resolve(fileName)
-        if (virtualMap.has(norm)) return virtualMap.get(norm)
-        return baseHost.readFile(fileName)
-      },
-    }
   }
 
   const targetFiles = isVirtual ? Object.keys(files) : (files ?? [])
   const unresolved = []
+
+  const projectConfigCache = new Map()
+  const hostCache = new Map()
+
+  function getProjectEnv(normFile) {
+    const tsconfigPath = options.tsconfigPath ?? findProjectTsconfig(normFile, repoRoot)
+    const normConfig = path.resolve(tsconfigPath).replace(/\\/g, '/')
+    let compilerOptions = projectConfigCache.get(normConfig)
+    if (!compilerOptions) {
+      const loaded = loadProjectCompilerOptions(normConfig, { ts })
+      compilerOptions = { ...loaded, ...(options.compilerOptions ?? {}) }
+      projectConfigCache.set(normConfig, compilerOptions)
+    }
+    let host = hostCache.get(normConfig)
+    if (!host) {
+      host = makeHost(compilerOptions, virtualMap, ts)
+      hostCache.set(normConfig, host)
+    }
+    return { compilerOptions, host }
+  }
 
   for (const relOrAbs of targetFiles) {
     const norm = path.resolve(repoRoot, relOrAbs)
@@ -2030,67 +2086,69 @@ export function unresolvedPluginImports(files, options = {}) {
         ? fs.readFileSync(norm, 'utf8')
         : null
     if (content === null) continue
+
+    const { compilerOptions, host } = getProjectEnv(norm)
     const sf = ts.createSourceFile(norm, content, ts.ScriptTarget.Latest, true)
 
     function checkImport(specifierNode) {
       if (!specifierNode || !ts.isStringLiteral(specifierNode)) return
       const specifier = specifierNode.text
+
+      const qIndex = specifier.indexOf('?')
+      const hasQuery = qIndex !== -1
+      const cleanSpecifier = hasQuery ? specifier.slice(0, qIndex) : specifier
+      const queryString = hasQuery ? specifier.slice(qIndex) : ''
+      const isViteQuery = hasQuery && VITE_QUERY_RE.test(queryString)
+
       if (
-        isBuiltin(specifier) ||
-        WORKERD_AMBIENT_MODULES.has(specifier) ||
-        specifier.startsWith('cloudflare:') ||
-        specifier.startsWith('assets:')
+        isBuiltin(cleanSpecifier) ||
+        WORKERD_AMBIENT_MODULES.has(cleanSpecifier) ||
+        cleanSpecifier.startsWith('cloudflare:') ||
+        cleanSpecifier.startsWith('assets:')
       ) {
         return
       }
 
-      const res = ts.resolveModuleName(specifier, norm, compilerOptions, host)
-      if (!res.resolvedModule) {
-        if (ASSET_SPECIFIER_RE.test(specifier)) {
-          const clean = specifier.split('?')[0]
-          if (clean.startsWith('.') || clean.startsWith('/')) {
-            const assetPath = path.resolve(path.dirname(norm), clean)
-            if (
-              isVirtual
-                ? virtualMap.has(assetPath)
-                : fs.existsSync(assetPath) || host.fileExists(assetPath)
-            ) {
+      if (!hasQuery) {
+        const res = ts.resolveModuleName(specifier, norm, compilerOptions, host)
+        if (res.resolvedModule) return
+      } else if (isViteQuery) {
+        const res = ts.resolveModuleName(cleanSpecifier, norm, compilerOptions, host)
+        if (res.resolvedModule) return
+      }
+
+      const canBeFileOnDisk =
+        isViteQuery || ASSET_SPECIFIER_RE.test(specifier) || ASSET_SPECIFIER_RE.test(cleanSpecifier)
+
+      if (canBeFileOnDisk) {
+        if (cleanSpecifier.startsWith('.') || cleanSpecifier.startsWith('/')) {
+          const targetPath = path.resolve(path.dirname(norm), cleanSpecifier)
+          if (fileOrHostExists(targetPath, host, isVirtual, virtualMap)) {
+            return
+          }
+        } else {
+          const aliasPaths = resolvePathAlias(cleanSpecifier, compilerOptions)
+          for (const p of aliasPaths) {
+            if (fileOrHostExists(p, host, isVirtual, virtualMap)) {
               return
             }
-          } else if (clean.startsWith('@/')) {
-            const assetPath = path.resolve(repoRoot, 'apps/web/src', clean.slice(2))
-            if (
-              isVirtual
-                ? virtualMap.has(assetPath)
-                : fs.existsSync(assetPath) || host.fileExists(assetPath)
-            ) {
-              return
-            }
-          } else if (clean.startsWith('@testkit/')) {
-            const assetPath = path.resolve(repoRoot, 'apps/web/tests/kit', clean.slice(10))
-            if (
-              isVirtual
-                ? virtualMap.has(assetPath)
-                : fs.existsSync(assetPath) || host.fileExists(assetPath)
-            ) {
-              return
-            }
-          } else if (!isVirtual) {
+          }
+          if (!isVirtual) {
             try {
-              createRequire(norm).resolve(clean)
+              createRequire(norm).resolve(cleanSpecifier)
               return
             } catch {}
           }
         }
-
-        const line = sf.getLineAndCharacterOfPosition(specifierNode.getStart(sf)).line + 1
-        unresolved.push({
-          file: isVirtual ? relOrAbs : path.relative(repoRoot, norm).replace(/\\/g, '/'),
-          line,
-          code: 2307,
-          message: `Cannot find module '${specifier}' or its corresponding type declarations.`,
-        })
       }
+
+      const line = sf.getLineAndCharacterOfPosition(specifierNode.getStart(sf)).line + 1
+      unresolved.push({
+        file: isVirtual ? relOrAbs : path.relative(repoRoot, norm).replace(/\\/g, '/'),
+        line,
+        specifier,
+        message: `Cannot find module '${specifier}' or its corresponding type declarations.`,
+      })
     }
 
     function walk(node) {
