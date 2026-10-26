@@ -108,6 +108,8 @@ The server surface: the context family, and the types a plugin must be able to n
     Already validated against the agent's own `inputSchema`, twice: at enqueue and before `run()`.
   - `tools: Tool[]`
     The kit's knowledge tools plus every installed plugin's, bound to this run's scope.
+  - `storage(): StorageService`
+    R2 (the `FILES` bucket), or a 503 `storage_not_configured` — the same service every other context's `storage()` returns. Read and write under `tenants/<ctx.tenantId>/<plugin…
   - `prompt(vars?: Record<string, string \| undefined>): Promise<string>`
     The system prompt for this agent's `promptKey`, with `appName`/`tenantName` filled in.
   - `step( key: string, label: string, status: 'running' \| 'done' \| 'error', detail?: string ): Promise<void>`
@@ -141,6 +143,19 @@ The server surface: the context family, and the types a plugin must be able to n
 - `type AppRouter = Hono<AppEnv>`
 - `interface BackgroundMethods`
   What every background context can do, tenant supplied per call.
+  - `enqueue(input: JobInput, options?: { delaySeconds?: number }): Promise<JobEnvelope>`
+    Enqueue follow-on work. A missing `JOBS_QUEUE` throws rather than running inline.
+  - `enqueueMany(inputs: readonly JobInput[], options?: { delaySeconds?: number }): Promise<void>`
+  - `nudge(tenantId: string, entity: string, id?: string): Promise<void>`
+    Tell one organisation's open tabs that a family of rows moved. **Awaited**, unlike a route's nudge: there is no `waitUntil` here to hang it on.
+  - `durableObject<T extends Rpc.DurableObjectBranded \| undefined = undefined>( namespace: DurableObjectNamespace<T>, tenantId: string, key?: string ): DurableObjectStub<T>`
+    A per-tenant Durable Object stub, with the tenant prefix built here rather than by the caller.
+  - `features(tenantId: string): Promise<readonly string[]>`
+    The feature keys one organisation has (D30) — what `auth.features` is on a request, resolved here for a tenant named per call. A cron that fans out across every organisation reads…
+  - `storage(): StorageService`
+    R2 (the `FILES` bucket), or a 503 `storage_not_configured` — loud, because a silently absent bucket loses bytes. The same service `RequestCtx.storage()` returns. Write under…
+  - `startAgentRun(input: StartAgentRunInput): Promise<StartedAgentRun>`
+    Start an agent run for one organisation and return its id — `POST /api/agents/runs` from a job, through the same `enqueueRun`: input validation (400), the exclusive slot, the…
 - `function createRouter(): Hono<AppEnv>`
 - `function createStepRealtimeFor(env: HubEnv): StepRealtime`
 - `function cronCtx(ctx: TaskContext): CronCtx`
@@ -170,6 +185,20 @@ The server surface: the context family, and the types a plugin must be able to n
   Thrown when a run reuses a step name — see rule 1.
 - `function durableObject<T extends Rpc.DurableObjectBranded \| undefined = undefined>( namespace: DurableObjectNamespace<T>, tenantId: string, key?: string ): DurableObjectStub<T>`
   A Durable Object stub for one tenant, **with the tenant prefix built here rather than by the caller** (D31).
+- `const EMAIL_CATCH_ALL: "*"`
+  The catch-all local part.
+- `type EmailContext = TaskContext`
+  What an email handler is given — the cron's context, for the same reasons.
+- `function emailCtx(ctx: EmailContext): EmailCtx`
+  Adapt the kit's `EmailContext`. The only place a plugin's email half names a kit internal.
+- `interface EmailCtx extends PluginContext, BackgroundMethods`
+  One inbound message's context.
+  - `waitUntil(promise: Promise<unknown>): void`
+- `interface EmailHandler`
+- `function emailLocalPart(address: string): string`
+  `Receipts+Proton@Example.com` → `receipts`. Lower-cased (local parts are case-insensitive in practice, and Email Routing matches them that way) and cut at the first `+`, which is…
+- `function emailSubaddress(address: string): string \| null`
+  `receipts+proton@example.com` → `proton`; null when the address carries no tag.
 - `function hasFeature(auth: Pick<PluginAuth, 'features'>, name: string): boolean`
   `true` when this deployment ships the surface AND this organisation has it yet.
 - `interface HookCtx extends Pick<PluginContext, 'db'>`
@@ -389,6 +418,8 @@ The server surface: the context family, and the types a plugin must be able to n
     Tools added to every agent run, beside the kit's three knowledge tools. Bound to the run's access scope, so a plugin tool reads what its REQUESTER may read and nothing more. May…
   - `scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>`
     Cron expression → tasks, merged into `SCHEDULED_TASKS` (tasks on a cron the kit already runs are appended after the kit's). A cron the kit does NOT run must also be added to…
+  - `emailHandlers?: readonly EmailHandler[]`
+    Inbound email (Cloudflare Email Routing → the Worker's `email` handler), merged into `EMAIL_HANDLERS` in `api/email.ts` and matched on the recipient's local part (`receipts` takes…
   - `grants?: Partial<Record<EffectiveRole, RoleGrant>>`
     Per-role CASL rules, applied after the kit's own matrix — additive, never a replacement.
   - `rlsExcludedTables?: readonly string[]`
@@ -410,6 +441,26 @@ The server surface: the context family, and the types a plugin must be able to n
 - `type SpanKind = 'agent' \| 'llm' \| 'tool' \| 'retrieval' \| 'embedding' \| 'job' \| 'span'`
   What a span IS — it picks the GenAI operation name and the backend's observation type.
 - `interface SpanParams`
+- `type StartAgentRun = (input: StartAgentRunInput) => Promise<StartedAgentRun>`
+- `interface StartAgentRunInput`
+  - `agentKey: AgentKey`
+    A core agent's key or one an installed plugin declared in its `SharedPlugin.agentKeys`.
+  - `tenantId: string`
+    The organisation the run belongs to — from the job's payload, never ambient.
+  - `input: unknown`
+    Validated against the agent's `inputSchema` here, and again before `run()`.
+  - `idempotencyKey?: string`
+    At most one run EVER per (tenant, agent, key): a second call returns the first call's run, whatever its status. Name the work (`receipt:<documentId>`), not the delivery.
+  - `concurrencyKey?: string`
+    At most one ACTIVE run per (tenant, agent, key) — the exclusive slot, narrowed. A new run may start once the previous one settles, which `idempotencyKey` never allows.
+  - `triggeredBy?: string \| null`
+    The user the run is on behalf of — `agent_runs.requested_by_user_id`, and the requester whose CURRENT access the run's tools are scoped to. Omitted, the run is system-triggered…
+- `interface StartedAgentRun`
+  - `runId: string`
+  - `status: AgentRunStatus`
+    `queued` for a new run; whatever the existing run's status is when `deduplicated`.
+  - `deduplicated: boolean`
+    The run already existed — the same `idempotencyKey`, or an active run holding the exclusive slot — and `runId` is THAT run. Nothing new was started.
 - `interface StepCtx extends PluginContext`
   What a step body is handed: the base context, with a client that belongs to THIS step.
   - `name: string`
@@ -429,6 +480,9 @@ The server surface: the context family, and the types a plugin must be able to n
   - `send(event: RealtimeEvent): Promise<void>`
   - `sendToUser(userId: string, event: RealtimeEvent): Promise<void>`
   - `sendToUsers(userIds: string[], event: RealtimeEvent): Promise<void>`
+- `interface StorageService`
+- `interface StoredObject extends StoredObjectMeta`
+- `interface StoredObjectMeta`
 - `type Subjects = CoreSubject \| PluginSubject \| FeatureSubject`
 - `type Tenant = typeof tenants.$inferSelect`
 - `interface Tool<Input = unknown>`
@@ -448,6 +502,8 @@ The server surface: the context family, and the types a plugin must be able to n
     The run's tenant — `scope.tenantId`, surfaced because every query needs it.
   - `maxDocumentChars?: number`
     The CALLER's budget for one document window, in characters. An agent run's is far larger than a chat turn's.
+  - `storage(): StorageService`
+    R2 (the `FILES` bucket), or a 503 `storage_not_configured` — the same service every other context's `storage()` returns. Read and write under `tenants/<ctx.tenantId>/<plugin…
 - `function toolInputSchema(schema: ZodType): JsonSchema`
   JSON Schema (draft-07, `$schema` stripped) for a tool input.
 - `interface ToolLoopCheckpoint`
@@ -710,6 +766,8 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
     Tools added to every agent run, beside the kit's three knowledge tools. Bound to the run's access scope, so a plugin tool reads what its REQUESTER may read and nothing more. May…
   - `scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>`
     Cron expression → tasks, merged into `SCHEDULED_TASKS` (tasks on a cron the kit already runs are appended after the kit's). A cron the kit does NOT run must also be added to…
+  - `emailHandlers?: readonly EmailHandler[]`
+    Inbound email (Cloudflare Email Routing → the Worker's `email` handler), merged into `EMAIL_HANDLERS` in `api/email.ts` and matched on the recipient's local part (`receipts` takes…
   - `grants?: Partial<Record<EffectiveRole, RoleGrant>>`
     Per-role CASL rules, applied after the kit's own matrix — additive, never a replacement.
   - `rlsExcludedTables?: readonly string[]`
@@ -977,13 +1035,20 @@ Builders for the context family, for tests that never touch data.
 
 > `@testkit/unit` — builders for the plugin context family (D31).
 
-- `interface CronCtxOptions extends BaseOptions`
+- `interface BackgroundCtxOptions extends BaseOptions`
+  What every background builder accepts beyond the base.
+- `interface CronCtxOptions extends BackgroundCtxOptions`
+- `type FakeCronCtx = CronCtx & RecordsAgentRuns`
+- `type FakeEmailCtx = EmailCtx & RecordsAgentRuns`
+- `type FakeJobCtx = JobCtx & RecordsAgentRuns`
 - `type FakeRequestCtx = RequestCtx & { readonly deferred: ReadonlyArray<() => Promise<unknown>> settle(): Promise<void> }`
   What a fake request context carries beyond the real one: the deferred work it collected.
 - `type FakeWorkflowCtx = WorkflowCtx & { readonly recorded: ReturnType<typeof createFakeWorkflowStep> }`
   The fake step recorder, so a test can assert the NAMES a run asked for and their order.
-- `function makeCronCtx(options: CronCtxOptions): CronCtx`
-- `function makeJobCtx(options: BaseOptions): JobCtx`
+- `function makeCronCtx(options: CronCtxOptions): FakeCronCtx`
+- `function makeEmailCtx(options: CronCtxOptions): FakeEmailCtx`
+  One inbound message's context (`emailHandlers`), through the kit's own `emailCtx` adapter.
+- `function makeJobCtx(options: BackgroundCtxOptions): FakeJobCtx`
   One queue message's context, through the kit's own `jobCtx` adapter.
 - `function makeRequestCtx(options: RequestCtxOptions): FakeRequestCtx`
   A `RequestCtx` with no request behind it.
@@ -991,6 +1056,10 @@ Builders for the context family, for tests that never touch data.
   What `ServerPlugin.agentTools(ctx)` is handed, through the kit's own `toolCtx` adapter.
 - `function makeWorkflowCtx(options: WorkflowCtxOptions): FakeWorkflowCtx`
   A `WorkflowCtx` over a recording step.
+- `interface RecordedAgentRun`
+  One `ctx.startAgentRun` call, as a background builder recorded it.
+- `interface RecordsAgentRuns`
+  What a fake background context carries beyond the real one: every `startAgentRun` call, in order, with what it answered or threw — so "the job started exactly one run, with this…
 - `interface RequestCtxOptions extends BaseOptions`
 - `interface ToolCtxOptions extends BaseOptions`
 - `interface WorkflowCtxOptions extends BaseOptions`
@@ -1023,6 +1092,7 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: AgentCtx.userId :: userId: string | null
 @/plugins/api :: member :: AgentCtx.input :: input: Input
 @/plugins/api :: member :: AgentCtx.tools :: tools: Tool[]
+@/plugins/api :: member :: AgentCtx.storage :: storage(): StorageService
 @/plugins/api :: member :: AgentCtx.prompt :: prompt(vars?: Record<string, string | undefined>): Promise<string>
 @/plugins/api :: member :: AgentCtx.step :: step( key: string, label: string, status: 'running' | 'done' | 'error', detail?: string ): Promise<void>
 @/plugins/api :: member :: AgentCtx.checkCancelled :: checkCancelled(): Promise<void>
@@ -1041,6 +1111,13 @@ nothing in the comparison that can throw.
 @/plugins/api :: type :: AnyUiPlugin :: type AnyUiPlugin = UiPlugin<SharedPlugin>
 @/plugins/api :: type :: AppRouter :: type AppRouter = Hono<AppEnv>
 @/plugins/api :: interface :: BackgroundMethods :: interface BackgroundMethods
+@/plugins/api :: member :: BackgroundMethods.enqueue :: enqueue(input: JobInput, options?: { delaySeconds?: number }): Promise<JobEnvelope>
+@/plugins/api :: member :: BackgroundMethods.enqueueMany :: enqueueMany(inputs: readonly JobInput[], options?: { delaySeconds?: number }): Promise<void>
+@/plugins/api :: member :: BackgroundMethods.nudge :: nudge(tenantId: string, entity: string, id?: string): Promise<void>
+@/plugins/api :: member :: BackgroundMethods.durableObject :: durableObject<T extends Rpc.DurableObjectBranded | undefined = undefined>( namespace: DurableObjectNamespace<T>, tenantId: string, key?: string ): DurableObjectStub<T>
+@/plugins/api :: member :: BackgroundMethods.features :: features(tenantId: string): Promise<readonly string[]>
+@/plugins/api :: member :: BackgroundMethods.storage :: storage(): StorageService
+@/plugins/api :: member :: BackgroundMethods.startAgentRun :: startAgentRun(input: StartAgentRunInput): Promise<StartedAgentRun>
 @/plugins/api :: function :: createRouter :: function createRouter(): Hono<AppEnv>
 @/plugins/api :: function :: createStepRealtimeFor :: function createStepRealtimeFor(env: HubEnv): StepRealtime
 @/plugins/api :: function :: cronCtx :: function cronCtx(ctx: TaskContext): CronCtx
@@ -1061,6 +1138,14 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: DetachedCtx.groups :: groups: readonly GroupRef[]
 @/plugins/api :: class :: DuplicateStepNameError :: class DuplicateStepNameError extends Error
 @/plugins/api :: function :: durableObject :: function durableObject<T extends Rpc.DurableObjectBranded | undefined = undefined>( namespace: DurableObjectNamespace<T>, tenantId: string, key?: string ): DurableObjectStub<T>
+@/plugins/api :: const :: EMAIL_CATCH_ALL :: const EMAIL_CATCH_ALL: "*"
+@/plugins/api :: type :: EmailContext :: type EmailContext = TaskContext
+@/plugins/api :: function :: emailCtx :: function emailCtx(ctx: EmailContext): EmailCtx
+@/plugins/api :: interface :: EmailCtx :: interface EmailCtx extends PluginContext, BackgroundMethods
+@/plugins/api :: member :: EmailCtx.waitUntil :: waitUntil(promise: Promise<unknown>): void
+@/plugins/api :: interface :: EmailHandler :: interface EmailHandler
+@/plugins/api :: function :: emailLocalPart :: function emailLocalPart(address: string): string
+@/plugins/api :: function :: emailSubaddress :: function emailSubaddress(address: string): string | null
 @/plugins/api :: function :: hasFeature :: function hasFeature(auth: Pick<PluginAuth, 'features'>, name: string): boolean
 @/plugins/api :: interface :: HookCtx :: interface HookCtx extends Pick<PluginContext, 'db'>
 @/plugins/api :: member :: HookCtx.tenant :: tenant: Tenant
@@ -1195,6 +1280,7 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: ServerPlugin.prompts :: prompts?: { [K in PromptKeyOf<S> & string]: PromptDefinition }
 @/plugins/api :: member :: ServerPlugin.agentTools :: agentTools?: (ctx: AgentToolContext) => Tool[] | Promise<Tool[]>
 @/plugins/api :: member :: ServerPlugin.scheduledTasks :: scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>
+@/plugins/api :: member :: ServerPlugin.emailHandlers :: emailHandlers?: readonly EmailHandler[]
 @/plugins/api :: member :: ServerPlugin.grants :: grants?: Partial<Record<EffectiveRole, RoleGrant>>
 @/plugins/api :: member :: ServerPlugin.rlsExcludedTables :: rlsExcludedTables?: readonly string[]
 @/plugins/api :: member :: ServerPlugin.unscopedAllowlist :: unscopedAllowlist?: Readonly<Record<string, string>>
@@ -1208,6 +1294,18 @@ nothing in the comparison that can throw.
 @/plugins/api :: function :: signState :: async function signState( config: PluginConfig, purpose: string, payload: Record<string, unknown>, opts: { ttlSeconds?: number } = {} ): Promise<string>
 @/plugins/api :: type :: SpanKind :: type SpanKind = 'agent' | 'llm' | 'tool' | 'retrieval' | 'embedding' | 'job' | 'span'
 @/plugins/api :: interface :: SpanParams :: interface SpanParams
+@/plugins/api :: type :: StartAgentRun :: type StartAgentRun = (input: StartAgentRunInput) => Promise<StartedAgentRun>
+@/plugins/api :: interface :: StartAgentRunInput :: interface StartAgentRunInput
+@/plugins/api :: member :: StartAgentRunInput.agentKey :: agentKey: AgentKey
+@/plugins/api :: member :: StartAgentRunInput.tenantId :: tenantId: string
+@/plugins/api :: member :: StartAgentRunInput.input :: input: unknown
+@/plugins/api :: member :: StartAgentRunInput.idempotencyKey :: idempotencyKey?: string
+@/plugins/api :: member :: StartAgentRunInput.concurrencyKey :: concurrencyKey?: string
+@/plugins/api :: member :: StartAgentRunInput.triggeredBy :: triggeredBy?: string | null
+@/plugins/api :: interface :: StartedAgentRun :: interface StartedAgentRun
+@/plugins/api :: member :: StartedAgentRun.runId :: runId: string
+@/plugins/api :: member :: StartedAgentRun.status :: status: AgentRunStatus
+@/plugins/api :: member :: StartedAgentRun.deduplicated :: deduplicated: boolean
 @/plugins/api :: interface :: StepCtx :: interface StepCtx extends PluginContext
 @/plugins/api :: member :: StepCtx.name :: name: string
 @/plugins/api :: member :: StepCtx.realtime :: realtime: StepRealtime
@@ -1221,6 +1319,9 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: StepRealtime.send :: send(event: RealtimeEvent): Promise<void>
 @/plugins/api :: member :: StepRealtime.sendToUser :: sendToUser(userId: string, event: RealtimeEvent): Promise<void>
 @/plugins/api :: member :: StepRealtime.sendToUsers :: sendToUsers(userIds: string[], event: RealtimeEvent): Promise<void>
+@/plugins/api :: interface :: StorageService :: interface StorageService
+@/plugins/api :: interface :: StoredObject :: interface StoredObject extends StoredObjectMeta
+@/plugins/api :: interface :: StoredObjectMeta :: interface StoredObjectMeta
 @/plugins/api :: type :: Subjects :: type Subjects = CoreSubject | PluginSubject | FeatureSubject
 @/plugins/api :: type :: Tenant :: type Tenant = typeof tenants.$inferSelect
 @/plugins/api :: interface :: Tool :: interface Tool<Input = unknown>
@@ -1234,6 +1335,7 @@ nothing in the comparison that can throw.
 @/plugins/api :: member :: ToolCtx.scope :: scope: AccessScope
 @/plugins/api :: member :: ToolCtx.tenantId :: tenantId: string
 @/plugins/api :: member :: ToolCtx.maxDocumentChars :: maxDocumentChars?: number
+@/plugins/api :: member :: ToolCtx.storage :: storage(): StorageService
 @/plugins/api :: function :: toolInputSchema :: function toolInputSchema(schema: ZodType): JsonSchema
 @/plugins/api :: interface :: ToolLoopCheckpoint :: interface ToolLoopCheckpoint
 @/plugins/api :: interface :: ToolLoopResult :: interface ToolLoopResult
@@ -1380,6 +1482,7 @@ nothing in the comparison that can throw.
 @/plugins/types :: member :: ServerPlugin.prompts :: prompts?: { [K in PromptKeyOf<S> & string]: PromptDefinition }
 @/plugins/types :: member :: ServerPlugin.agentTools :: agentTools?: (ctx: AgentToolContext) => Tool[] | Promise<Tool[]>
 @/plugins/types :: member :: ServerPlugin.scheduledTasks :: scheduledTasks?: Readonly<Record<string, ScheduledTask[]>>
+@/plugins/types :: member :: ServerPlugin.emailHandlers :: emailHandlers?: readonly EmailHandler[]
 @/plugins/types :: member :: ServerPlugin.grants :: grants?: Partial<Record<EffectiveRole, RoleGrant>>
 @/plugins/types :: member :: ServerPlugin.rlsExcludedTables :: rlsExcludedTables?: readonly string[]
 @/plugins/types :: member :: ServerPlugin.unscopedAllowlist :: unscopedAllowlist?: Readonly<Record<string, string>>
@@ -1529,14 +1632,21 @@ nothing in the comparison that can throw.
 @testkit/integration :: const :: unauthorizedResponse :: const unauthorizedResponse: () => Response
 @testkit/integration :: function :: uniqueId :: function uniqueId(): string
 @testkit/integration :: function :: waitOnExecutionContext :: async function waitOnExecutionContext(ctx: TestExecutionContext): Promise<void>
-@testkit/unit :: interface :: CronCtxOptions :: interface CronCtxOptions extends BaseOptions
+@testkit/unit :: interface :: BackgroundCtxOptions :: interface BackgroundCtxOptions extends BaseOptions
+@testkit/unit :: interface :: CronCtxOptions :: interface CronCtxOptions extends BackgroundCtxOptions
+@testkit/unit :: type :: FakeCronCtx :: type FakeCronCtx = CronCtx & RecordsAgentRuns
+@testkit/unit :: type :: FakeEmailCtx :: type FakeEmailCtx = EmailCtx & RecordsAgentRuns
+@testkit/unit :: type :: FakeJobCtx :: type FakeJobCtx = JobCtx & RecordsAgentRuns
 @testkit/unit :: type :: FakeRequestCtx :: type FakeRequestCtx = RequestCtx & { readonly deferred: ReadonlyArray<() => Promise<unknown>> settle(): Promise<void> }
 @testkit/unit :: type :: FakeWorkflowCtx :: type FakeWorkflowCtx = WorkflowCtx & { readonly recorded: ReturnType<typeof createFakeWorkflowStep> }
-@testkit/unit :: function :: makeCronCtx :: function makeCronCtx(options: CronCtxOptions): CronCtx
-@testkit/unit :: function :: makeJobCtx :: function makeJobCtx(options: BaseOptions): JobCtx
+@testkit/unit :: function :: makeCronCtx :: function makeCronCtx(options: CronCtxOptions): FakeCronCtx
+@testkit/unit :: function :: makeEmailCtx :: function makeEmailCtx(options: CronCtxOptions): FakeEmailCtx
+@testkit/unit :: function :: makeJobCtx :: function makeJobCtx(options: BackgroundCtxOptions): FakeJobCtx
 @testkit/unit :: function :: makeRequestCtx :: function makeRequestCtx(options: RequestCtxOptions): FakeRequestCtx
 @testkit/unit :: function :: makeToolCtx :: function makeToolCtx(options: ToolCtxOptions): ToolCtx
 @testkit/unit :: function :: makeWorkflowCtx :: function makeWorkflowCtx(options: WorkflowCtxOptions): FakeWorkflowCtx
+@testkit/unit :: interface :: RecordedAgentRun :: interface RecordedAgentRun
+@testkit/unit :: interface :: RecordsAgentRuns :: interface RecordsAgentRuns
 @testkit/unit :: interface :: RequestCtxOptions :: interface RequestCtxOptions extends BaseOptions
 @testkit/unit :: interface :: ToolCtxOptions :: interface ToolCtxOptions extends BaseOptions
 @testkit/unit :: interface :: WorkflowCtxOptions :: interface WorkflowCtxOptions extends BaseOptions

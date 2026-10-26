@@ -394,8 +394,13 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   for an exclusive agent (one per tenant), a caller's `enqueueRun({ concurrencyKey })` to narrow it
   to one active run per key, NULL for an agent declaring `exclusive: false`, whose rows sit outside
   the index so any number may be active at once — one person's conversation with an agent, which
-  parks on their answers while others hold conversations of their own. A plugin agent
-  reaches `ctx.interrupt` and the resolved `chatModel` through `AgentCtx` (`@/plugins/api`). The Workflow runs `claim → execute#N → (resume#N | expire#N) → finish`, and
+  parks on their answers while others hold conversations of their own. `enqueueRun({
+  idempotencyKey })` goes further — at most one run EVER per (tenant, agent, key): the run id is
+  derived from the three (`idempotentRunId`, a SHA-256-shaped v8 UUID), so the primary key is the
+  gate and a repeat answers the first run, settled or not; a failed `create()` deletes the row
+  rather than failing it, so the retry can start it. A plugin starts a run from a job, cron, email
+  or public handler with `ctx.startAgentRun` (§16), the same `enqueueRun`. A plugin agent
+  reaches `ctx.interrupt`, the resolved `chatModel` and `storage()` through `AgentCtx` (`@/plugins/api`). The Workflow runs `claim → execute#N → (resume#N | expire#N) → finish`, and
   **every step name carries its round**, because a repeated name replays the recorded result.
   A retry resumes: `ctx.checkpoint` keeps the tool-loop transcript and `ctx.once(key, fn)` gives
   once-per-run effects (a DB unique index; at-least-once with a recorded result).
@@ -483,7 +488,10 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   and reconciliation runs once before the first frame. Payloads never go over the tenant-wide DO,
   because run visibility is per run.
 - **Knowledge (D18)**: `documents` + `chunks` (pgvector HNSW). Text is ingested inline or by job;
-  uploads go to R2, then `AI.toMarkdown`, then the same indexer. Search is hybrid dense + lexical
+  uploads go to R2, then `AI.toMarkdown`, then the same indexer. Every text write strips NUL and
+  the other C0 controls except tab / LF / CR (`stripControlChars`, `api/utils/core/text.ts`) —
+  some PDFs convert with NULs, which Postgres refuses (22021); the span store does the same over
+  `ai_spans` (jsonb refuses `\u0000`, 22P05). Search is hybrid dense + lexical
   (the lexical half matches ANY query word, ranked by `ts_rank_cd` — `anyTermTsquery` — so a
   sentence's filler words cannot veto it) with RRF, scoped by `AccessScope` (§1).
   `document-content.ts` is the one text reader behind both
@@ -892,9 +900,29 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
   round-trip the plugin started: HMAC-SHA256 under a key HKDF-derived from
   `OAUTH_ENCRYPTION_KEY`, a `purpose` that is part of the signed body, an absolute expiry
   (default 10 min), `null` for every failure. Signed, not encrypted.
-- **Background feature checks (D34)**: `JobCtx`, `CronCtx` and `PublicCtx` carry
-  `features(tenantId)` — the same resolution as `auth.features`, with no user, so a cron that fans
-  out across tenants can skip the ones whose flag is off.
+- **Inbound email**: `emailHandlers` route Cloudflare Email Routing mail ("Send to a Worker") to
+  a plugin by the recipient's LOCAL PART — `receipts` takes `receipts@…` and `receipts+tag@…`, `*`
+  is the catch-all — through the Worker's `email` export (`api/email.ts`). The host validates
+  config, opens one DB client, `setReject`s an address nobody claims and rethrows a handler's
+  failure (a temporary failure the sender retries, never a bounce). The handler gets `emailCtx` —
+  `CronCtx`'s shape, no tenant: an address is not an organisation — and owns MIME parsing, sender
+  checks, tenant resolution and storage; it should store, write a row and enqueue. Routing an
+  address to the Worker is a per-zone dashboard step. `plugins.test.ts` refuses two plugins
+  claiming one local part.
+- **Background feature checks (D34)**: `JobCtx`, `CronCtx`, `PublicCtx` and `EmailCtx` carry
+  `storage()` (R2 under `tenants/<id>/<plugin id>/…`, purged with the tenant) and `features(tenantId)` — the same resolution as `auth.features`, with no user, so a cron that fans
+  out across tenants can skip the ones whose flag is off. `AgentCtx` and `ToolCtx` carry the same
+  `storage()` (one `filesStorage(env)` behind every context's), keyed under the run's tenant.
+- **Starting agent runs from the background**: the same four contexts carry
+  `startAgentRun({ agentKey, tenantId, input, idempotencyKey?, concurrencyKey?, triggeredBy? })`
+  → `{ runId, status, deduplicated }` — `POST /api/agents/runs` without a request, through the
+  same `enqueueRun` (validation, exclusive slot, active-run cap, daily budget, the Workflow start;
+  each refusal a throw, so a job retries). A job passes an `idempotencyKey` naming the WORK
+  (`receipt:<documentId>`), so a redelivery answers the first run instead of starting a second
+  (§9). `triggeredBy` is the requester whose access the run's tools read; omitted, a system run.
+  It is part of `feature-agents` and reaches the runtime by a function-scope import (the agent
+  registry reads the plugin barrel). `@testkit/unit`'s `makeJobCtx` / `makeCronCtx` /
+  `makeEmailCtx` record every call in `startedRuns` and take a `startAgentRun` replacement.
 - **Knowledge ingest (D34)**: `ingestDocument` / `ingestDocumentFile` / `deleteIngestedDocument`
   over the kit's ingest paths (§9). With an `externalId`, the same `(tenant, source, externalId)`
   UPDATES the row — text, owner, visibility, grants, chunks, the stored original — so a sync can
@@ -947,10 +975,12 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
 | 21 | `plugin check` is an exhaustive, untiered oracle that reads comment-free code |
 | 22 | Table prefixes are convention; collisions are the check |
 | 23 | A plugin ships agent skills: `skills/<dir>/` → `.claude/skills/<dir>/`, namespaced by id, replaced on upgrade |
+| 24 | Inbound email is a slot keyed by local part; the host dispatches and rejects, the plugin parses, authenticates and stores |
+| 25 | A background context starts an agent run through the route's own `enqueueRun`; idempotency is a derived run id, not a new column |
 
 **Known gaps:** no sandbox, review or signing; no rename migrations (expand/contract only); no
 cross-plugin FK tooling or `many()` onto core tables; `grants` is additive by convention only;
-provisioning never deletes resources; `d1`/`vectorize`/`analytics_engine` bindings are refused;
+provisioning never deletes resources and never creates an Email Routing rule; `d1`/`vectorize`/`analytics_engine` bindings are refused;
 the ledger judges only ledgered entries, ignores namespace imports, truncates types over 300
 chars, and `uses` is only as fresh as the last export; table collisions are caught by `check`, not
 refused at `add`; the isolation check proves a test exists, not that it is right; no database-free
@@ -965,6 +995,9 @@ upsert reads the previous row before writing, so two racing re-ingests of a FILE
 replaced original behind in R2; a plugin skill edited in place is overwritten by the next
 `plugin upgrade` (copy it to a skill of your own first), and `check` validates a skill's name and
 description, not what it says — a stale command in a SKILL.md is caught only by reading it.
+`startAgentRun`'s `idempotencyKey` is forever per (tenant, agent, key) — there is no expiry, so a
+plugin that wants to re-run the same work later must vary the key; `RequestCtx` has no
+`startAgentRun` (a route calls `POST /api/agents/runs`, or enqueues a job that does).
 
 ---
 
