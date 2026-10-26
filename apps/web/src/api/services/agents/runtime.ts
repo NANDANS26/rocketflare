@@ -292,7 +292,6 @@ export async function executeRun(
     const approvals: ReadonlyMap<string, ToolApproval> = await approvalsForRun(db, tenantId, runId)
     const reconciledTools = await reconcileToolEvents(db, tenantId, runId, {
       realtime,
-      attempt: run.attempt,
     })
     const interruptExpiresAt = interruptExpiryFrom(cfg.AGENT_INTERRUPT_TIMEOUT)
     const tenant = await db.query.tenants.findFirst({
@@ -333,6 +332,17 @@ export async function executeRun(
           traceChatClient(resolved.client, trace, { provider: resolved.provider }, tracer),
           meter
         )
+        const sharedEmit = async (event: AgentEvent): Promise<void> => {
+          if (
+            (event.type === 'tool.start' || event.type === 'tool.end') &&
+            event.data &&
+            typeof (event.data as any).toolCallId === 'string' &&
+            reconciledTools.has((event.data as any).toolCallId)
+          ) {
+            return
+          }
+          return emit(event)
+        }
         const ctx = withFanout({
           db,
           cfg,
@@ -343,7 +353,7 @@ export async function executeRun(
           runId,
           userId: run.requestedByUserId,
           input,
-          emit,
+          emit: sharedEmit,
           checkCancelled,
           chat: { client, model: resolved.model, maxOutputTokens: resolved.maxOutputTokens },
           // D29: built here, at EXECUTE time, from the run's requester — current membership, not
@@ -552,7 +562,7 @@ export async function executeRun(
     const details = err instanceof StructuredOutputError ? err.issues : undefined
     if (isRetryableRunError(err) && run.attempt <= EXECUTE_RETRIES) {
       logger.warn({ err, attempt: run.attempt }, 'agent-run: retryable failure, step will retry')
-      await reconcileToolEvents(db, tenantId, runId, { attempt: run.attempt, realtime })
+      await reconcileToolEvents(db, tenantId, runId, { realtime })
       await emit({ type: 'error', data: { message, attempt: run.attempt, willRetry: true } })
       await settle()
       throw err

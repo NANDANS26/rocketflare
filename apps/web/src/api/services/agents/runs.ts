@@ -40,6 +40,7 @@ import {
   agentToolEndEventDataSchema,
   agentToolStartEventDataSchema,
   CLAIMABLE_RUN_STATUSES,
+  type ReconciledToolOutcome,
 } from '@rocketflare/shared/ai/agents'
 import { ERROR_CODES } from '@rocketflare/shared/errors'
 import { and, asc, count, eq, inArray, sql } from 'drizzle-orm'
@@ -1078,13 +1079,7 @@ export async function listEvents(
     .orderBy(asc(agentRunEvents.seq))
 }
 
-export interface ReconciledToolOutcome {
-  toolCallId: string
-  name: string
-  outcome: 'unknown' | 'success' | 'error'
-  text: string
-  isError: boolean
-}
+export type { ReconciledToolOutcome }
 
 /**
  * Reconcile persisted tool.start and tool.end events for a run (issue #5).
@@ -1092,7 +1087,7 @@ export interface ReconciledToolOutcome {
  * When an agent tool starts but the process crashes before completion is recorded,
  * this pairs start and end events by toolCallId. Any call that started without a matching
  * tool.end is classified as outcome: 'unknown' and persisted as a tool.end event (unless
- * the call is currently waiting for human approval).
+ * the call is currently waiting for human approval, or was explicitly rejected).
  *
  * Calls that already completed with tool.end are retained with their known outcome,
  * preserving independent outcomes in concurrent turns.
@@ -1104,10 +1099,19 @@ export async function reconcileToolEvents(
   options: {
     realtime?: Realtime
     forceSettled?: boolean
-    attempt?: number
   } = {}
 ): Promise<Map<string, ReconciledToolOutcome>> {
-  const events = await listEvents(db, tenantId, runId)
+  const events = await db
+    .select()
+    .from(agentRunEvents)
+    .where(
+      and(
+        eq(agentRunEvents.tenantId, tenantId),
+        eq(agentRunEvents.runId, runId),
+        inArray(agentRunEvents.type, ['tool.start', 'tool.end'])
+      )
+    )
+    .orderBy(asc(agentRunEvents.seq))
   const openCalls = new Map<
     string,
     { event: AgentRunEventRow; name: string; toolCallId: string; input?: unknown }
@@ -1159,41 +1163,47 @@ export async function reconcileToolEvents(
     }
   }
 
-  // Find pending interrupts for this run: tool calls currently waiting for human approval must NOT be marked unknown
-  const pendingInterrupts = await db.query.agentRunInterrupts.findMany({
-    where: and(
-      eq(agentRunInterrupts.tenantId, tenantId),
-      eq(agentRunInterrupts.runId, runId),
-      eq(agentRunInterrupts.status, 'pending')
-    ),
+  // Consolidated interrupt query for this run
+  const interrupts = await db.query.agentRunInterrupts.findMany({
+    where: and(eq(agentRunInterrupts.tenantId, tenantId), eq(agentRunInterrupts.runId, runId)),
   })
-  const pendingToolCallIds = new Set(
-    pendingInterrupts.map(i => i.toolCallId).filter((id): id is string => Boolean(id))
-  )
+  const pendingToolCallIds = new Set<string>()
+  const resolvedInterruptMap = new Map<string, string>()
+  const rejectedToolCallIds = new Set<string>()
 
-  // Find resolved interrupts: check if effects were already recorded via ctx.once
-  const resolvedInterrupts = await db.query.agentRunInterrupts.findMany({
-    where: and(
-      eq(agentRunInterrupts.tenantId, tenantId),
-      eq(agentRunInterrupts.runId, runId),
-      eq(agentRunInterrupts.status, 'resolved')
-    ),
-  })
-  const resolvedInterruptMap = new Map(resolvedInterrupts.map(i => [i.toolCallId ?? '', i.id]))
+  for (const interrupt of interrupts) {
+    if (!interrupt.toolCallId) continue
+    if (interrupt.status === 'pending') {
+      pendingToolCallIds.add(interrupt.toolCallId)
+    } else if (interrupt.status === 'resolved') {
+      resolvedInterruptMap.set(interrupt.toolCallId, interrupt.id)
+    } else if (interrupt.status === 'cancelled' || interrupt.status === 'expired') {
+      // Rejection or expiry by a person or timeout is an explicit decline, not an unknown execution outcome
+      rejectedToolCallIds.add(interrupt.toolCallId)
+    }
+  }
 
   const reconciled = new Map<string, ReconciledToolOutcome>(completed)
 
   for (const [toolCallId, call] of openCalls.entries()) {
     if (pendingToolCallIds.has(toolCallId)) {
-      // Paused on human approval: not unknown
+      // Paused on human approval: keep pending approvals out of unknown-outcome reconciliation
+      continue
+    }
+
+    if (rejectedToolCallIds.has(toolCallId)) {
+      // Resolved-but-rejected approval must not be recorded as unknown, even under forceSettled.
+      // Explicit rejection is an answer, not an unresolved execution crash.
       continue
     }
 
     // Check if this tool was approved
     const resolvedInterruptId = resolvedInterruptMap.get(toolCallId)
     if (resolvedInterruptId) {
-      // Read effect ledger to see if it already finished before crash
-      const recorded = await readEffect(db, tenantId, runId, `tool:${resolvedInterruptId}`)
+      // Read effect ledger to see if it already finished before crash (check both toolCallId and interrupt UUID)
+      const recorded =
+        (await readEffect(db, tenantId, runId, `tool:${toolCallId}`)) ??
+        (await readEffect(db, tenantId, runId, `tool:${resolvedInterruptId}`))
       if (recorded) {
         const text =
           typeof recorded.result === 'string'

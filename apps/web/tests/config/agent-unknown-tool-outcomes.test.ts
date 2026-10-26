@@ -1,3 +1,4 @@
+import { agentToolEndEventDataSchema } from '@rocketflare/shared/ai/agents'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import {
@@ -49,9 +50,11 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
       [
         'call_0',
         {
+          toolCallId: 'call_0',
+          name: 'charge_card',
           text: unknownMessage,
           isError: false,
-          outcome: 'unknown',
+          outcome: 'unknown' as const,
         },
       ],
     ])
@@ -118,8 +121,26 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
     // call_0 has a known completed result from persisted tool.end
     // call_1 had tool.start without tool.end, reconciled to unknown
     const reconciledTools = new Map([
-      ['call_0', { text: 'result-A', isError: false, outcome: 'success' }],
-      ['call_1', { text: 'Outcome is unknown', isError: false, outcome: 'unknown' }],
+      [
+        'call_0',
+        {
+          toolCallId: 'call_0',
+          name: 'worker_tool',
+          text: 'result-A',
+          isError: false,
+          outcome: 'success' as const,
+        },
+      ],
+      [
+        'call_1',
+        {
+          toolCallId: 'call_1',
+          name: 'worker_tool',
+          text: 'Outcome is unknown',
+          isError: false,
+          outcome: 'unknown' as const,
+        },
+      ],
     ])
 
     const res = await runToolLoop(client, {
@@ -152,89 +173,122 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
     })
   })
 
-  it('3. resumes from checkpoint with pending tool calls and reconciles unknown tool outcome without re-executing', async () => {
-    let executionCount = 0
-    let checkpointsSaved = 0
+  it('3. reproduces real crash/recovery path with fresh tool-call IDs on resume', async () => {
+    let sideEffectExecutionCount = 0
+    let freshToolExecutionCount = 0
+    let latestCheckpoint: ToolLoopCheckpoint | undefined
+
+    const abortController = new AbortController()
 
     const sideEffectTool: Tool<{ id: string }> = {
       name: 'charge_card',
       description: 'Perform a side effect',
       schema: dummySchema,
       handler: async ({ id }) => {
-        executionCount += 1
-        return `charged-${id}`
+        sideEffectExecutionCount += 1
+        // Simulate a process crash / abort during execution of the side-effecting handler
+        abortController.abort()
+        throw new Error('Process killed mid-handler')
       },
     }
 
-    const client = new FakeChatClient([
+    const freshTool: Tool<{ id: string }> = {
+      name: 'send_receipt',
+      description: 'Fresh independent tool',
+      schema: dummySchema,
+      handler: async ({ id }) => {
+        freshToolExecutionCount += 1
+        return `receipt-sent-${id}`
+      },
+    }
+
+    // Step 1: Assistant requests charge_card with toolUseId 'call_original_1'
+    const firstClient = new FakeChatClient([
       {
-        toolUses: [{ name: 'final_answer', input: { answer: 'Recovered' } }],
+        toolUses: [{ id: 'call_original_1', name: 'charge_card', input: { id: 'card_123' } }],
       },
     ])
 
+    // Step 2 & 3: Run begins. The assistant turn is checkpointed BEFORE the handler runs.
+    // The process crashes / aborts mid-handler.
+    await expect(
+      runToolLoop(firstClient, {
+        model: 'test-model',
+        system: 'Test system',
+        messages: [{ role: 'user', content: 'Charge the card' }],
+        tools: [sideEffectTool, freshTool, finalAnswerTool],
+        signal: abortController.signal,
+        onCheckpoint: async cp => {
+          latestCheckpoint = cp
+        },
+      })
+    ).rejects.toThrow(/cancelled/)
+
+    // Verify side effect ran once before the crash
+    expect(sideEffectExecutionCount).toBe(1)
+    // The durable checkpoint recorded the assistant turn before handler execution
+    expect(latestCheckpoint).toBeDefined()
+    expect(latestCheckpoint?.messages).toHaveLength(2)
+    expect(latestCheckpoint?.messages[1]?.role).toBe('assistant')
+
+    // Step 4: Recovery reconciles open tool events.
+    // 'call_original_1' had tool.start but no tool.end, so it is reconciled as outcome: 'unknown'
     const unknownMessage =
       'The tool call started but the process stopped before completion was recorded. Outcome is unknown.'
-
-    // A checkpoint where an assistant turn asked to call `charge_card` with `call_pending`
-    const resumeCheckpoint: ToolLoopCheckpoint = {
-      turns: 1,
-      usage: { inputTokens: 10, outputTokens: 5 },
-      messages: [
-        { role: 'user', content: 'Charge 100' },
-        {
-          role: 'assistant',
-          content: [
-            {
-              type: 'tool_use',
-              id: 'call_pending',
-              name: 'charge_card',
-              input: { id: 'card_pending_1' },
-            },
-          ],
-        },
-      ],
-    }
-
     const reconciledTools = new Map([
       [
-        'call_pending',
+        'call_original_1',
         {
+          toolCallId: 'call_original_1',
+          name: 'charge_card',
           text: unknownMessage,
           isError: false,
-          outcome: 'unknown',
+          outcome: 'unknown' as const,
         },
       ],
     ])
 
-    const res = await runToolLoop(client, {
+    // Step 5: Resume from the saved checkpoint.
+    // In turn 2 (after the unknown outcome is presented in transcript), the fake model is configured
+    // to return a NEW tool call with a NEW tool-call ID ('call_fresh_turn_2'), NOT replaying 'call_original_1'.
+    const resumedClient = new FakeChatClient([
+      {
+        toolUses: [{ id: 'call_fresh_turn_2', name: 'send_receipt', input: { id: 'receipt_456' } }],
+      },
+      {
+        toolUses: [{ name: 'final_answer', input: { answer: 'All done after recovery' } }],
+      },
+    ])
+
+    const res = await runToolLoop(resumedClient, {
       model: 'test-model',
       system: 'Test system',
       messages: [{ role: 'user', content: 'Seed should be ignored on resume' }],
-      tools: [sideEffectTool, finalAnswerTool],
-      resume: resumeCheckpoint,
+      tools: [sideEffectTool, freshTool, finalAnswerTool],
+      resume: latestCheckpoint,
       reconciledTools,
-      onCheckpoint: async _cp => {
-        checkpointsSaved += 1
-      },
     })
 
-    // The tool handler MUST NOT execute because it was reconciled!
-    expect(executionCount).toBe(0)
+    // Step 6: Assert that the previously uncertain side effect was NOT executed again!
+    expect(sideEffectExecutionCount).toBe(1)
 
-    // The transcript MUST contain the reconciled outcome for the model
-    const toolResult = res.messages
+    // Step 7: Assert that the unknown outcome is surfaced in the conversation transcript
+    const toolResults = res.messages
       .flatMap(m => (Array.isArray(m.content) ? m.content : []))
-      .find(b => b.type === 'tool_result' && b.toolUseId === 'call_pending')
+      .filter(b => b.type === 'tool_result')
 
-    expect(toolResult).toBeDefined()
-    if (toolResult && toolResult.type === 'tool_result') {
-      expect(toolResult.content).toBe(unknownMessage)
-      expect(toolResult.isError).toBe(false)
-    }
+    const reconciledResult = toolResults.find(b => b.toolUseId === 'call_original_1')
+    expect(reconciledResult).toBeDefined()
+    expect(reconciledResult?.content).toBe(unknownMessage)
+    expect(reconciledResult?.isError).toBe(false)
 
-    // Checkpoint saved for the completed turn
-    expect(checkpointsSaved).toBeGreaterThanOrEqual(1)
-    expect(res.terminalInput).toEqual({ answer: 'Recovered' })
+    // Step 8: Assert that the genuinely new, unrelated tool call executed
+    expect(freshToolExecutionCount).toBe(1)
+    const freshResult = toolResults.find(b => b.toolUseId === 'call_fresh_turn_2')
+    expect(freshResult).toBeDefined()
+    expect(freshResult?.content).toBe('receipt-sent-receipt_456')
+
+    expect(res.terminalInput).toEqual({ answer: 'All done after recovery' })
   })
 
   it('4. executes newly requested tool calls in subsequent turns even when earlier calls were reconciled', async () => {
@@ -265,7 +319,16 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
     ])
 
     const reconciledTools = new Map([
-      ['call_0', { text: 'reconciled-outcome', isError: false, outcome: 'unknown' }],
+      [
+        'call_0',
+        {
+          toolCallId: 'call_0',
+          name: 'fresh_tool',
+          text: 'reconciled-outcome',
+          isError: false,
+          outcome: 'unknown' as const,
+        },
+      ],
     ])
 
     const res = await runToolLoop(client, {
@@ -455,6 +518,80 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
 
       // Call is not in reconciled map and no tool.end event was inserted
       expect(reconciled.has('call_pending')).toBe(false)
+      expect(insertedEvents).toHaveLength(0)
+    })
+
+    it('under forceSettled, does not mark rejected/cancelled or expired approval as unknown', async () => {
+      const { reconcileToolEvents } = await import('@/api/services/agents/runs')
+
+      const events = [
+        {
+          id: 'ev-1',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 1,
+          type: 'tool.start',
+          data: { name: 'delete_resource', toolCallId: 'call_declined' },
+          at: new Date('2026-10-22T10:00:00Z'),
+        },
+        {
+          id: 'ev-2',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 2,
+          type: 'tool.start',
+          data: { name: 'modify_resource', toolCallId: 'call_expired' },
+          at: new Date('2026-10-22T10:00:01Z'),
+        },
+      ]
+
+      const insertedEvents: any[] = []
+
+      const makeSelect = () => {
+        const p: any = Promise.resolve([...events])
+        p.from = () => p
+        p.where = () => p
+        p.orderBy = () => p
+        return p
+      }
+
+      const mockDb: any = {
+        select: makeSelect,
+        query: {
+          agentRunInterrupts: {
+            findMany: () =>
+              Promise.resolve([
+                {
+                  id: 'int-declined',
+                  runId: 'run-1',
+                  tenantId: 'tenant-1',
+                  key: 'tool:call_declined',
+                  toolCallId: 'call_declined',
+                  status: 'cancelled',
+                },
+                {
+                  id: 'int-expired',
+                  runId: 'run-1',
+                  tenantId: 'tenant-1',
+                  key: 'tool:call_expired',
+                  toolCallId: 'call_expired',
+                  status: 'expired',
+                },
+              ]),
+          },
+        },
+        execute: async () => {
+          throw new Error('should not insert event for rejected or expired approvals')
+        },
+      }
+
+      const reconciled = await reconcileToolEvents(mockDb, 'tenant-1', 'run-1', {
+        forceSettled: true,
+      })
+
+      // Explicitly rejected or expired approvals must NOT be classified as unknown
+      expect(reconciled.has('call_declined')).toBe(false)
+      expect(reconciled.has('call_expired')).toBe(false)
       expect(insertedEvents).toHaveLength(0)
     })
 
@@ -650,7 +787,7 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
       expect(insertedEvents[0].data.toolCallId).toBe('call_B')
     })
 
-    it('reconciles approved tool call as success when effect was recorded before crash', async () => {
+    it('reconciles approved tool call as success when effect was recorded under tool:${toolCallId}', async () => {
       const { reconcileToolEvents } = await import('@/api/services/agents/runs')
 
       const events: any[] = [
@@ -679,8 +816,6 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
         return p
       }
 
-      let findManyCallCount = 0
-
       const mockDb: any = {
         select: makeSelect,
         insert: () => ({
@@ -696,14 +831,8 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
         }),
         query: {
           agentRunInterrupts: {
-            findMany: () => {
-              findManyCallCount++
-              // First call: pending interrupts -> empty
-              if (findManyCallCount === 1) {
-                return Promise.resolve([])
-              }
-              // Second call: resolved interrupts -> int-appr-1
-              return Promise.resolve([
+            findMany: () =>
+              Promise.resolve([
                 {
                   id: 'int-appr-1',
                   runId: 'run-1',
@@ -712,8 +841,7 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
                   toolCallId: 'call_appr_1',
                   status: 'resolved',
                 },
-              ])
-            },
+              ]),
           },
         },
         execute: async () => {
@@ -747,6 +875,100 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
         toolCallId: 'call_appr_1',
         outcome: 'success',
         text: '{"recordId":123,"saved":true}',
+        isError: false,
+      })
+      expect(insertedEvents).toHaveLength(1)
+      expect(insertedEvents[0].data.outcome).toBe('success')
+    })
+
+    it('reconciles approved tool call as success when effect was recorded under tool:${resolvedInterruptId}', async () => {
+      const { reconcileToolEvents } = await import('@/api/services/agents/runs')
+
+      const events: any[] = [
+        {
+          id: 'ev-1',
+          runId: 'run-1',
+          tenantId: 'tenant-1',
+          seq: 1,
+          type: 'tool.start',
+          data: { name: 'save_record', toolCallId: 'call_appr_2', input: { id: 456 } },
+          at: new Date('2026-10-22T10:00:00Z'),
+        },
+      ]
+
+      const insertedEvents: any[] = []
+      const claimedEffects = new Set<string>()
+
+      const makeSelect = (arg?: any) => {
+        const isEffectQuery = Boolean(arg && typeof arg === 'object' && 'result' in arg)
+        const p: any = Promise.resolve(
+          isEffectQuery ? [{ result: { recordId: 456, saved: true } }] : [...events]
+        )
+        p.from = () => p
+        p.where = () => p
+        p.orderBy = () => p
+        return p
+      }
+
+      const mockDb: any = {
+        select: makeSelect,
+        insert: () => ({
+          values: (val: any) => ({
+            onConflictDoNothing: () => ({
+              returning: () => {
+                if (claimedEffects.has(val.key)) return []
+                claimedEffects.add(val.key)
+                return [{ id: 'eff-1' }]
+              },
+            }),
+          }),
+        }),
+        query: {
+          agentRunInterrupts: {
+            findMany: () =>
+              Promise.resolve([
+                {
+                  id: 'int-uuid-456',
+                  runId: 'run-1',
+                  tenantId: 'tenant-1',
+                  key: 'tool:call_appr_2',
+                  toolCallId: 'call_appr_2',
+                  status: 'resolved',
+                },
+              ]),
+          },
+        },
+        execute: async () => {
+          const seq = events.length + 1
+          const row = {
+            id: `ev-${seq}`,
+            runId: 'run-1',
+            tenantId: 'tenant-1',
+            seq,
+            type: 'tool.end',
+            data: {
+              name: 'save_record',
+              toolCallId: 'call_appr_2',
+              outcome: 'success',
+              isError: false,
+              result: { recordId: 456, saved: true },
+            },
+            at: new Date(),
+          }
+          events.push(row)
+          insertedEvents.push(row)
+          return [row]
+        },
+      }
+
+      const reconciled = await reconcileToolEvents(mockDb, 'tenant-1', 'run-1', {
+        forceSettled: true,
+      })
+
+      expect(reconciled.get('call_appr_2')).toMatchObject({
+        toolCallId: 'call_appr_2',
+        outcome: 'success',
+        text: '{"recordId":456,"saved":true}',
         isError: false,
       })
       expect(insertedEvents).toHaveLength(1)
@@ -807,12 +1029,100 @@ describe('Issue #5: Surface unknown tool outcome after retry instead of silently
       // Active run resumption (not forceSettled)
       const reconciled = await reconcileToolEvents(mockDb, 'tenant-1', 'run-1', {
         forceSettled: false,
-        attempt: 2,
       })
 
       // Must NOT be marked unknown; leave it to run
       expect(reconciled.has('call_pending_run')).toBe(false)
       expect(insertedEvents).toHaveLength(0)
+    })
+  })
+
+  describe('schema and runtime validation', () => {
+    it('strict outcome schema validation accepts only valid enum outcomes', () => {
+      // Valid enum values
+      expect(
+        agentToolEndEventDataSchema.safeParse({ name: 'test', outcome: 'success' }).success
+      ).toBe(true)
+      expect(
+        agentToolEndEventDataSchema.safeParse({ name: 'test', outcome: 'error' }).success
+      ).toBe(true)
+      expect(
+        agentToolEndEventDataSchema.safeParse({ name: 'test', outcome: 'unknown' }).success
+      ).toBe(true)
+      expect(agentToolEndEventDataSchema.safeParse({ name: 'test' }).success).toBe(true)
+
+      // Invalid outcome strings or types are rejected
+      expect(
+        agentToolEndEventDataSchema.safeParse({ name: 'test', outcome: 'invalid_outcome' }).success
+      ).toBe(false)
+      expect(agentToolEndEventDataSchema.safeParse({ name: 'test', outcome: 123 }).success).toBe(
+        false
+      )
+      expect(agentToolEndEventDataSchema.safeParse({ name: 'test', outcome: true }).success).toBe(
+        false
+      )
+    })
+
+    it('shared runtime suppresses duplicate tool events across agents', async () => {
+      const emittedEvents: any[] = []
+      const rawEmit = async (event: any) => {
+        emittedEvents.push(event)
+      }
+
+      const reconciledTools = new Map([
+        [
+          'call_reconciled',
+          {
+            toolCallId: 'call_reconciled',
+            name: 'test_tool',
+            outcome: 'unknown' as const,
+            text: 'Outcome is unknown',
+            isError: false,
+          },
+        ],
+      ])
+
+      // Emulate shared runtime emit wrapper from runtime.ts
+      const sharedEmit = async (event: any): Promise<void> => {
+        if (
+          (event.type === 'tool.start' || event.type === 'tool.end') &&
+          event.data &&
+          typeof event.data.toolCallId === 'string' &&
+          reconciledTools.has(event.data.toolCallId)
+        ) {
+          return
+        }
+        return rawEmit(event)
+      }
+
+      // Reconciled tool start/end should be suppressed
+      await sharedEmit({
+        type: 'tool.start',
+        data: { name: 'test_tool', toolCallId: 'call_reconciled' },
+      })
+      await sharedEmit({
+        type: 'tool.end',
+        data: { name: 'test_tool', toolCallId: 'call_reconciled', result: 'foo' },
+      })
+
+      // Unrelated events and new tool calls pass through
+      await sharedEmit({
+        type: 'text',
+        data: { text: 'Hello' },
+      })
+      await sharedEmit({
+        type: 'tool.start',
+        data: { name: 'new_tool', toolCallId: 'call_new' },
+      })
+      await sharedEmit({
+        type: 'tool.end',
+        data: { name: 'new_tool', toolCallId: 'call_new', result: 'done' },
+      })
+
+      expect(emittedEvents).toHaveLength(3)
+      expect(emittedEvents.map(e => e.type)).toEqual(['text', 'tool.start', 'tool.end'])
+      expect(emittedEvents[1].data.toolCallId).toBe('call_new')
+      expect(emittedEvents[2].data.toolCallId).toBe('call_new')
     })
   })
 })

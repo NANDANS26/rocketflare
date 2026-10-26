@@ -369,7 +369,6 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
         if (event.kind === 'text') {
           await ctx.emit({ type: 'text', data: { text: event.text } })
         } else if (event.kind === 'tool_call') {
-          if (ctx.reconciledTools?.has(event.toolUseId)) return
           // The model's own call id travels with the row so the AG-UI projection can pair this
           // start with its end. Pairing by tool NAME alone is wrong the moment one turn makes two
           // `search_knowledge` calls: the second start overwrites the first and both results are
@@ -381,7 +380,6 @@ export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTop
         } else {
           await ctx.checkCancelled()
           collectDocuments(event.resultText, seen)
-          if (ctx.reconciledTools?.has(event.toolUseId)) return
           await ctx.emit({
             type: 'tool.end',
             data: {

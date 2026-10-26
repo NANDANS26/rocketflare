@@ -1124,6 +1124,10 @@ export async function runToolLoop(
     const gates = collectGates(toolUses, denied)
     if (gates.length > 0) return await raise(gates)
 
+    // Persist the assistant turn containing pending tool uses before any tool handler begins
+    // execution, so crash recovery resumes with tool calls intact instead of re-prompting the model.
+    await checkpoint()
+
     messages.push({ role: 'user', content: await executeToolUses(toolUses, turns, denied) })
     await checkpoint()
   }
