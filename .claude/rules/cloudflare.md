@@ -132,6 +132,14 @@ turn was investigated and rejected (`docs/CONCEPTS.md` §9 Known gaps): steps do
   `ServerPlugin.scheduledTasks`; the two tomls are the host's.** A task keyed on an expression no
   toml carries simply never runs, and nothing anywhere says so — which is why installing a plugin
   with `crons[]` prints a numbered step, and `pnpm provision cloudflare <env>` writes it
+- `email(message, env, ctx)` (`apps/web/src/api/email.ts`): Cloudflare Email Routing's "Send to a
+  Worker" action. `loadConfig(env)`, then `resolveEmailHandler(message.to, EMAIL_HANDLERS)` — every
+  installed plugin's `emailHandlers`, matched on the recipient's lower-cased local part without its
+  `+tag`, `*` as the catch-all. No handler → `message.setReject('Unknown recipient')` (a permanent
+  bounce); a handler that throws is logged and RETHROWN (a temporary failure the sender retries).
+  One DB client per message, closed in `waitUntil`. The kit claims no address itself; the routing
+  rule is a per-zone dashboard step (`docs/DEPLOY.md` § Inbound email). Locally:
+  `curl -X POST 'http://localhost:3001/cdn-cgi/handler/email?from=a@x.test&to=b@y.test' --data-binary @m.eml`
 - `AgentRunWorkflow` (`apps/web/src/api/workflows/agent-run.ts`): `run(event, step)` → `step.do('claim')` →
   `step.do('execute#N', { retries, timeout })` → `step.do('finish')`, with a round loop in between
   (below); each step wraps its body in

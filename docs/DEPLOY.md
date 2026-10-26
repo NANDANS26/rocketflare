@@ -205,6 +205,27 @@ tenant API key, so there is no path here that wants a production `DATABASE_URL` 
 laptop. Cron runs share the Worker's CPU budget: past a few hundred tenants, fan the per-tenant
 rebuilds out through `JOBS_QUEUE`.
 
+## Inbound email
+
+The Worker exports `email` (`apps/web/src/api/email.ts`), which hands each message to the installed
+plugin whose `emailHandlers` claims the recipient's local part, and bounces the rest. The kit claims
+no address itself, so with no such plugin installed nothing below is needed. Nothing in a toml
+declares inbound mail; the route is configured per zone, once per environment:
+
+1. The domain (or a subdomain of it) must be a Cloudflare zone. Dashboard → the zone → **Email** →
+   **Email Routing** → enable it. For a subdomain (`app.example.com`), add it under **Settings →
+   Subdomains**; Cloudflare writes the MX and SPF records, and the subdomain must have no MX
+   records of its own.
+2. **Routing rules → Create address**: the address (e.g. `receipts@app.example.com`), action
+   **Send to a Worker**, destination the production Worker (`rocketflare`) — or the staging one on
+   staging's address. Turn on **subaddressing** in Settings if senders will use `receipts+tag@`.
+3. Send a test message and watch `wrangler tail`: `email: no handler for this recipient` means the
+   rule works and no plugin claims that local part.
+
+Limits worth knowing: messages up to 25 MiB; the handler runs under the Worker's ordinary CPU
+budget, so a plugin parses in a queued job, not in `email()`. Locally, `wrangler dev` accepts a raw
+message: `curl -X POST 'http://localhost:3001/cdn-cgi/handler/email?from=a@example.com&to=receipts@example.com' --data-binary @message.eml`.
+
 ## Account-scoped names — the incident this guards against
 
 Workflow names are unique **per Cloudflare account**, not per Worker. Whichever script last deployed

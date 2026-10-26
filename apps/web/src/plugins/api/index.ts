@@ -75,6 +75,8 @@ export type { AbilityCheck, Actions, MembershipRole, PluginAuth, Subjects, User 
 export { hasFeature, isAdminLevel, isGlobalAdmin, isOwnerLevel, requireFeature } from './auth'
 export type { HookCtx, SeedCtx, Tenant } from './db'
 export { affected, isUniqueViolation, pgErrorCode, rows, transaction } from './db'
+export type { EmailContext, EmailCtx, EmailHandler } from './email'
+export { EMAIL_CATCH_ALL, emailCtx, emailLocalPart, emailSubaddress } from './email'
 export type { ActivityInput, NotifyInput, Realtime } from './events'
 export {
   durableObject,
@@ -106,6 +108,9 @@ export type {
   JobOf,
   JobType,
   ScheduledTask,
+  StartAgentRun,
+  StartAgentRunInput,
+  StartedAgentRun,
 } from './jobs'
 export { cronCtx, jobCtx } from './jobs'
 export type {
@@ -142,6 +147,9 @@ export type {
   PluginConfig,
   PluginContext,
   PluginLogger,
+  StorageService,
+  StoredObject,
+  StoredObjectMeta,
 } from './types'
 export type { StepCtx, StepOptions, WorkflowCtx } from './workflow'
 export { DuplicateStepNameError, workflowCtx } from './workflow'

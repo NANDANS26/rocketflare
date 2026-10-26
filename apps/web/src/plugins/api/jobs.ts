@@ -21,12 +21,16 @@ import type { JobContext } from '../../api/queues/jobs'
 import type { TaskContext } from '../../api/scheduled'
 import { tenantFeatures } from '../../api/services/features'
 import { enqueueJob, enqueueJobs } from '../../api/services/jobs'
+import type { StorageService } from '../../api/services/storage'
+import { agentRunStarter, type StartAgentRunInput, type StartedAgentRun } from './agent-runs'
 import { createStepRealtimeFor } from './realtime-step'
+import { filesStorage } from './storage'
 import type { PluginContext } from './types'
 
 export type { JobEnvelope, JobInput, JobOf, JobType } from '@rocketflare/shared/jobs'
 export type { JobContext, JobHandler } from '../../api/queues/jobs'
 export type { ScheduledTask, TaskContext } from '../../api/scheduled'
+export type { StartAgentRun, StartAgentRunInput, StartedAgentRun } from './agent-runs'
 
 /** What every background context can do, tenant supplied per call. */
 export interface BackgroundMethods {
@@ -57,6 +61,22 @@ export interface BackgroundMethods {
    * tenant's override and the platform state alone.
    */
   features(tenantId: string): Promise<readonly string[]>
+  /**
+   * R2 (the `FILES` bucket), or a 503 `storage_not_configured` — loud, because a silently absent
+   * bucket loses bytes. The same service `RequestCtx.storage()` returns. Write under
+   * `tenants/<tenantId>/<plugin id>/…` so the `tenant.purge` job removes the objects with the tenant.
+   */
+  storage(): StorageService
+  /**
+   * Start an agent run for one organisation and return its id — `POST /api/agents/runs` from a
+   * job, through the same `enqueueRun`: input validation (400), the exclusive slot, the active-run
+   * cap (429 `agent_runs_limit`), the daily budget (429 `ai_budget_exceeded`), the Workflow start
+   * (503 `agent_runs_not_configured` without the binding). Pass an `idempotencyKey` naming the
+   * work (`receipt:<documentId>`) so a redelivered message answers the first run, `deduplicated`,
+   * instead of starting a second. Part of `feature-agents`: an app without the agent runtime has
+   * no such method.
+   */
+  startAgentRun(input: StartAgentRunInput): Promise<StartedAgentRun>
 }
 
 /**
@@ -73,7 +93,8 @@ export interface CronCtx extends PluginContext, BackgroundMethods {
 }
 
 /** Shared by `JobCtx`, `CronCtx` and the public-mount context (`./public`). */
-export function backgroundMethods({ db, config, env }: PluginContext): BackgroundMethods {
+export function backgroundMethods(ctx: PluginContext): BackgroundMethods {
+  const { db, config, env } = ctx
   return {
     enqueue: (input, options) => enqueueJob(env.JOBS_QUEUE, input, options),
     enqueueMany: async (inputs, options) => {
@@ -85,6 +106,8 @@ export function backgroundMethods({ db, config, env }: PluginContext): Backgroun
     durableObject: (namespace, tenantId, key) =>
       namespace.get(namespace.idFromName(key ? `${tenantId}:${key}` : tenantId)),
     features: tenantId => tenantFeatures(db, config, tenantId),
+    storage: () => filesStorage(env),
+    startAgentRun: agentRunStarter(ctx),
   }
 }
 

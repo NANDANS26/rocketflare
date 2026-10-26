@@ -41,6 +41,8 @@ import type {
 } from '../../api/services/ai/kit'
 import { callStructuredTool, runToolLoop, toolInputSchema } from '../../api/services/ai/kit'
 import { recordUsage } from '../../api/services/ai/usage'
+import type { StorageService } from '../../api/services/storage'
+import { filesStorage } from './storage'
 import type { Database, PluginBindings, PluginConfig } from './types'
 
 export type {
@@ -86,6 +88,12 @@ export interface ToolCtx {
   tenantId: string
   /** The CALLER's budget for one document window, in characters. An agent run's is far larger than a chat turn's. */
   maxDocumentChars?: number
+  /**
+   * R2 (the `FILES` bucket), or a 503 `storage_not_configured` — the same service every other
+   * context's `storage()` returns. Read and write under `tenants/<ctx.tenantId>/<plugin id>/…`;
+   * the tenant is the RUN's, never one the model named.
+   */
+  storage(): StorageService
 }
 
 /** Adapt the runtime's tool context. The only place a plugin's tools name a kit internal. */
@@ -97,6 +105,7 @@ export function toolCtx(ctx: AgentToolContext): ToolCtx {
     scope: ctx.scope,
     tenantId: ctx.scope.tenantId,
     ...(ctx.maxDocumentChars !== undefined && { maxDocumentChars: ctx.maxDocumentChars }),
+    storage: () => filesStorage(ctx.env as PluginBindings),
   }
 }
 
@@ -135,6 +144,12 @@ export interface AgentCtx<Input = unknown> {
   input: Input
   /** The kit's knowledge tools plus every installed plugin's, bound to this run's scope. */
   tools: Tool[]
+  /**
+   * R2 (the `FILES` bucket), or a 503 `storage_not_configured` — the same service every other
+   * context's `storage()` returns. Read and write under `tenants/<ctx.tenantId>/<plugin id>/…`. A
+   * write is a side effect, so it goes through `once` like any other.
+   */
+  storage(): StorageService
   /** The system prompt for this agent's `promptKey`, with `appName`/`tenantName` filled in. */
   prompt(vars?: Record<string, string | undefined>): Promise<string>
   /** A durable timeline row. Never throws — progress must not be able to fail a run. */
@@ -221,6 +236,7 @@ export function agentCtx<Input>(ctx: AgentContext<Input>): AgentCtx<Input> {
     userId: ctx.userId,
     input: ctx.input,
     tools: ctx.tools,
+    storage: () => filesStorage(ctx.env as PluginBindings),
     prompt: vars => ctx.prompt(vars),
     step: (key, label, status, detail) => ctx.step(key, label, status, detail),
     checkCancelled: () => ctx.checkCancelled(),
