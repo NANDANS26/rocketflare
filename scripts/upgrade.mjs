@@ -375,7 +375,11 @@ function main(argv) {
     const raw = kit.run(['diff', '--no-renames', from, to, '--', f.path])
     if (!raw.trim()) continue
 
-    const { allCommentOnly, commentPatch } = extractCommentHunks(raw, commentChar)
+    const beforeText = kit.show(from, f.path)
+    const { allCommentOnly, commentPatch } = extractCommentHunks(raw, commentChar, {
+      filePath: f.path,
+      fileText: beforeText,
+    })
     if (!commentPatch) continue
 
     let translated
@@ -399,10 +403,12 @@ function main(argv) {
     )
 
     if (check.ok) {
+      f.initialClass = f.class
+      f.initialReason = f.reason
       f.commentPatch = translated
       if (allCommentOnly) {
-        f.class = 'manual (comments applied)'
-        f.reason = 'comment-only changes applied automatically'
+        f.class = 'manual-comments'
+        f.reason = 'comment-only changes apply automatically'
       }
     } else {
       warnings.push(
@@ -459,7 +465,7 @@ function main(argv) {
         f.class === 'manual-toml' ||
         f.class === 'manual-env' ||
         f.class === 'manual' ||
-        f.class === 'manual (comments applied)' ||
+        f.class === 'manual-comments' ||
         f.class === 'binary'
       ) {
         if (f.change !== 'deleted') write(path.join('reference', f.path), kit.show(to, f.path))
@@ -572,6 +578,7 @@ function main(argv) {
       }
     }
     // Apply comment patches to manual files
+    const rejectedCommentPatches = []
     for (const f of files.filter(x => x.commentPatch)) {
       const one = path.join(workRoot, 'files', `${f.path}.patch`)
       if (!existsSync(one)) continue
@@ -585,6 +592,7 @@ function main(argv) {
         one,
       ])
       if (!r.ok) {
+        rejectedCommentPatches.push(f)
         f.class = f.initialClass
         f.reason = `${f.initialReason} (comment patch rejected, ${f.path}.rej created)`
         const planEntry = plan.files.find(x => x.path === f.path)
@@ -595,12 +603,25 @@ function main(argv) {
         warnings.push(
           `${f.path}: comment patch rejected (${f.path}.rej created); left for manual resolution`
         )
+      } else {
+        f.commentPatchApplied = true
+        if (f.class === 'manual-comments') {
+          f.reason = 'comment-only changes applied automatically'
+          const planEntry = plan.files.find(x => x.path === f.path)
+          if (planEntry) {
+            planEntry.reason = f.reason
+          }
+        }
       }
     }
-    const commentRejects = files.filter(x => x.commentPatch && x.class === x.initialClass)
-    if (commentRejects.length > 0 && !args.dryRun) {
-      write('plan.json', `${JSON.stringify(plan, null, 2)}\n`)
-      write('plan.md', renderPlan(plan, notes))
+    if (rejectedCommentPatches.length > 0) {
+      const byClass = {}
+      for (const f of files) byClass[f.class] = (byClass[f.class] ?? 0) + 1
+      plan.counts = byClass
+      if (!args.dryRun) {
+        write('plan.json', `${JSON.stringify(plan, null, 2)}\n`)
+        write('plan.md', renderPlan(plan, notes))
+      }
     }
     out(
       `✔ 6/6 apply     ${addedFiles.length} added, ${patches.length - rejected} patched` +
@@ -621,7 +642,15 @@ function main(argv) {
   }
 
   if (args.json) out(JSON.stringify(plan, null, 2))
-  else out('', ...report(plan, notes, applicableNotes, { dryRun: args.dryRun }), '')
+  else
+    out(
+      '',
+      ...report(plan, notes, applicableNotes, {
+        dryRun: args.dryRun,
+        applied: Boolean(args.apply && !args.dryRun),
+      }),
+      ''
+    )
 
   out(
     'Verify (the gate):',
@@ -639,7 +668,7 @@ function applyNames(text, names) {
   return applyReplacements(text, names).text
 }
 
-function report(plan, notes, applicable, { dryRun }) {
+function report(plan, notes, applicable, { dryRun, applied = false }) {
   const lines = []
   const bucket = cls => plan.files.filter(f => f.class === cls)
   const skippedSurface = bucket('skipped-surface-absent').length
@@ -684,10 +713,14 @@ function report(plan, notes, applicable, { dryRun }) {
     lines.push('', 'Decide these yourself (the kit version is under reference/):')
     for (const f of manual) lines.push(`  ${f.path} — ${f.reason}`)
   }
-  const commentsApplied = bucket('manual (comments applied)')
-  if (commentsApplied.length > 0) {
-    lines.push('', 'Applied comment-only changes in manual configuration files:')
-    for (const f of commentsApplied) lines.push(`  ${f.path}`)
+  const commentsFiles = bucket('manual-comments')
+  if (commentsFiles.length > 0) {
+    if (applied) {
+      lines.push('', 'Applied comment-only changes in manual configuration files:')
+    } else {
+      lines.push('', 'Comment-only changes to apply automatically in manual configuration files:')
+    }
+    for (const f of commentsFiles) lines.push(`  ${f.path}`)
   }
   const migrations = bucket('migration-derived')
   if (migrations.length > 0) {

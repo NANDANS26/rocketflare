@@ -175,7 +175,7 @@ export const CLASSES = Object.freeze([
   'manual-toml',
   'manual-env',
   'manual',
-  'manual (comments applied)',
+  'manual-comments',
   'binary',
   'verbatim',
 ])
@@ -419,7 +419,7 @@ export const APPLYABLE = new Set(['modified', 'verbatim'])
 
 /**
  * Comment syntax marker for configuration files that support comment-only upgrades.
- * Returns '#' for TOML and .dev.vars files; null for JSON, Markdown, and unknown extensions.
+ * Returns '#' for TOML, .dev.vars, and .env files; null for JSON, Markdown, and unknown extensions.
  */
 export function commentSyntaxForPath(relPath) {
   if (!relPath) return null
@@ -427,7 +427,114 @@ export function commentSyntaxForPath(relPath) {
   if (norm.endsWith('.toml')) return '#'
   const base = path.posix.basename(norm)
   if (base === '.dev.vars' || base.startsWith('.dev.vars.')) return '#'
+  if (base === '.env' || base.startsWith('.env.')) return '#'
   return null
+}
+
+/** TOML scanner state values */
+export const TOML_STATE_NORMAL = 0
+export const TOML_STATE_SINGLE_BASIC = 1
+export const TOML_STATE_SINGLE_LITERAL = 2
+export const TOML_STATE_MULTI_BASIC = 3
+export const TOML_STATE_MULTI_LITERAL = 4
+
+/**
+ * Scan a single line of TOML given an initial string state.
+ * Accurately tracks basic strings ("..."), literal strings ('...'),
+ * multiline basic strings ("""..."""), and multiline literal strings ('''...'''),
+ * taking into account escape characters.
+ *
+ * In TOML, '#' only begins a comment when outside of any string.
+ * A line is considered comment-only if it is empty/whitespace or its first non-whitespace
+ * token begins with an unquoted '#'.
+ */
+export function scanTomlLine(line, initialState = TOML_STATE_NORMAL) {
+  let state = initialState
+  let i = 0
+  const len = line.length
+  let firstNonWhitespace = -1
+  let commentStart = -1
+
+  for (let j = 0; j < len; j++) {
+    const c = line[j]
+    if (c !== ' ' && c !== '\t' && c !== '\r') {
+      firstNonWhitespace = j
+      break
+    }
+  }
+
+  while (i < len) {
+    const ch = line[i]
+
+    if (state === TOML_STATE_NORMAL) {
+      if (ch === ' ' || ch === '\t' || ch === '\r') {
+        i++
+        continue
+      }
+
+      if (line.startsWith('"""', i)) {
+        state = TOML_STATE_MULTI_BASIC
+        i += 3
+      } else if (line.startsWith("'''", i)) {
+        state = TOML_STATE_MULTI_LITERAL
+        i += 3
+      } else if (ch === '"') {
+        state = TOML_STATE_SINGLE_BASIC
+        i++
+      } else if (ch === "'") {
+        state = TOML_STATE_SINGLE_LITERAL
+        i++
+      } else if (ch === '#') {
+        // '#' in NORMAL state begins a comment extending to end of line
+        commentStart = i
+        break
+      } else {
+        i++
+      }
+    } else if (state === TOML_STATE_SINGLE_BASIC) {
+      if (ch === '\\') {
+        i += 2 // skip escaped character
+      } else if (ch === '"') {
+        state = TOML_STATE_NORMAL
+        i++
+      } else {
+        i++
+      }
+    } else if (state === TOML_STATE_SINGLE_LITERAL) {
+      if (ch === "'") {
+        state = TOML_STATE_NORMAL
+        i++
+      } else {
+        i++
+      }
+    } else if (state === TOML_STATE_MULTI_BASIC) {
+      if (ch === '\\') {
+        i += 2 // skip escaped character
+      } else if (line.startsWith('"""', i)) {
+        state = TOML_STATE_NORMAL
+        i += 3
+      } else {
+        i++
+      }
+    } else if (state === TOML_STATE_MULTI_LITERAL) {
+      if (line.startsWith("'''", i)) {
+        state = TOML_STATE_NORMAL
+        i += 3
+      } else {
+        i++
+      }
+    }
+  }
+
+  // Single-line strings cannot cross line boundaries in TOML
+  if (state === TOML_STATE_SINGLE_BASIC || state === TOML_STATE_SINGLE_LITERAL) {
+    state = TOML_STATE_NORMAL
+  }
+
+  const isCommentOnly =
+    firstNonWhitespace === -1 || (commentStart !== -1 && commentStart === firstNonWhitespace)
+
+  return { endState: state, isCommentOnly, commentStart }
 }
 
 /**
@@ -467,21 +574,63 @@ export function parseHunks(blockRaw) {
 }
 
 /**
- * Returns true if every added and removed line in the hunk is empty or starts with `commentChar`.
+ * Returns true if every added and removed line in the hunk is empty or a genuine comment.
+ * In TOML files, distinguishes comments from '#' characters inside single-line or multiline strings.
  * Context lines may contain anything. Requires at least one added or removed line.
  */
-export function isCommentOnlyHunk(hunk, commentChar) {
+export function isCommentOnlyHunk(hunk, commentChar, options = {}) {
   if (!commentChar || !hunk?.lines) return false
+
+  const isToml =
+    options.format === 'toml' ||
+    Boolean(options.filePath?.endsWith('.toml')) ||
+    (commentChar === '#' && hunk.lines.some(l => l.includes('"""') || l.includes("'''")))
+
   let hasChanges = false
+
+  if (!isToml) {
+    for (const line of hunk.lines) {
+      if (line.startsWith('+') || line.startsWith('-')) {
+        hasChanges = true
+        const content = line.slice(1).trim()
+        if (content !== '' && !content.startsWith(commentChar)) {
+          return false
+        }
+      }
+    }
+    return hasChanges
+  }
+
+  let oldState = options.initialOldState ?? options.initialState ?? TOML_STATE_NORMAL
+  let newState = options.initialNewState ?? options.initialState ?? TOML_STATE_NORMAL
+
   for (const line of hunk.lines) {
-    if (line.startsWith('+') || line.startsWith('-')) {
+    const prefix = line[0]
+    if (prefix === '@@') continue
+    const content = line.slice(1)
+
+    if (prefix === ' ') {
+      const oldScan = scanTomlLine(content, oldState)
+      oldState = oldScan.endState
+      const newScan = scanTomlLine(content, newState)
+      newState = newScan.endState
+    } else if (prefix === '-') {
       hasChanges = true
-      const content = line.slice(1).trim()
-      if (content !== '' && !content.startsWith(commentChar)) {
+      const oldScan = scanTomlLine(content, oldState)
+      oldState = oldScan.endState
+      if (!oldScan.isCommentOnly) {
+        return false
+      }
+    } else if (prefix === '+') {
+      hasChanges = true
+      const newScan = scanTomlLine(content, newState)
+      newState = newScan.endState
+      if (!newScan.isCommentOnly) {
         return false
       }
     }
   }
+
   return hasChanges
 }
 
@@ -490,7 +639,7 @@ export function isCommentOnlyHunk(hunk, commentChar) {
  * When comment-only hunks exist, returns a unified diff patch string containing
  * only those hunks under the original file header.
  */
-export function extractCommentHunks(blockRaw, commentChar) {
+export function extractCommentHunks(blockRaw, commentChar, options = {}) {
   const { header, hunks } = parseHunks(blockRaw)
   if (hunks.length === 0 || !commentChar) {
     return {
@@ -502,10 +651,72 @@ export function extractCommentHunks(blockRaw, commentChar) {
     }
   }
 
+  let filePath = options.filePath
+  if (!filePath && header) {
+    const m = header.match(/diff --git a\/(\S+) b\/\S+/) || header.match(/--- a\/(\S+)/)
+    if (m) filePath = m[1]
+  }
+
+  const isToml =
+    options.format === 'toml' ||
+    Boolean(filePath?.endsWith('.toml')) ||
+    (commentChar === '#' && (blockRaw.includes('"""') || blockRaw.includes("'''")))
+
+  let fileLineStates = null
+  if (isToml && options.fileText) {
+    fileLineStates = []
+    const lines = options.fileText.split('\n')
+    let st = TOML_STATE_NORMAL
+    for (let i = 0; i < lines.length; i++) {
+      fileLineStates.push(st)
+      st = scanTomlLine(lines[i], st).endState
+    }
+  }
+
   const commentHunks = []
   const nonCommentHunks = []
+
+  let runningOldState = TOML_STATE_NORMAL
+  let runningNewState = TOML_STATE_NORMAL
+
   for (const h of hunks) {
-    if (isCommentOnlyHunk(h, commentChar)) {
+    let hunkInitialOld = runningOldState
+    let hunkInitialNew = runningNewState
+
+    if (fileLineStates && h.header) {
+      const match = h.header.match(/^@@ -(\d+)/)
+      if (match) {
+        const lineNum = parseInt(match[1], 10)
+        if (lineNum > 0 && lineNum - 1 < fileLineStates.length) {
+          hunkInitialOld = fileLineStates[lineNum - 1]
+          hunkInitialNew = fileLineStates[lineNum - 1]
+        }
+      }
+    }
+
+    const isComment = isCommentOnlyHunk(h, commentChar, {
+      ...options,
+      filePath,
+      format: isToml ? 'toml' : undefined,
+      initialOldState: hunkInitialOld,
+      initialNewState: hunkInitialNew,
+    })
+
+    if (isToml && !fileLineStates) {
+      for (const line of h.lines) {
+        const prefix = line[0]
+        if (prefix === '@@') continue
+        const content = line.slice(1)
+        if (prefix === ' ' || prefix === '-') {
+          runningOldState = scanTomlLine(content, runningOldState).endState
+        }
+        if (prefix === ' ' || prefix === '+') {
+          runningNewState = scanTomlLine(content, runningNewState).endState
+        }
+      }
+    }
+
+    if (isComment) {
       commentHunks.push(h)
     } else {
       nonCommentHunks.push(h)

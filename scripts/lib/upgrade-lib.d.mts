@@ -129,7 +129,7 @@ export type FileClass =
   | 'manual-toml'
   | 'manual-env'
   | 'manual'
-  | 'manual (comments applied)'
+  | 'manual-comments'
   | 'binary'
   | 'verbatim'
 export const CLASSES: readonly FileClass[]
@@ -195,9 +195,30 @@ export interface ParsedHunks {
 
 export function parseHunks(blockRaw: string): ParsedHunks
 
+export const TOML_STATE_NORMAL: 0
+export const TOML_STATE_SINGLE_BASIC: 1
+export const TOML_STATE_SINGLE_LITERAL: 2
+export const TOML_STATE_MULTI_BASIC: 3
+export const TOML_STATE_MULTI_LITERAL: 4
+
+export interface TomlLineScan {
+  endState: number
+  isCommentOnly: boolean
+  commentStart: number
+}
+
+export function scanTomlLine(line: string, initialState?: number): TomlLineScan
+
 export function isCommentOnlyHunk(
   hunk: Hunk | { lines: readonly string[] },
-  commentChar: string | null
+  commentChar: string | null,
+  options?: {
+    format?: string
+    filePath?: string
+    initialState?: number
+    initialOldState?: number
+    initialNewState?: number
+  }
 ): boolean
 
 export interface ExtractedCommentHunks {
@@ -210,7 +231,13 @@ export interface ExtractedCommentHunks {
 
 export function extractCommentHunks(
   blockRaw: string,
-  commentChar: string | null
+  commentChar: string | null,
+  options?: {
+    format?: string
+    filePath?: string
+    fileText?: string
+    afterText?: string
+  }
 ): ExtractedCommentHunks
 
 export interface NoteFrontmatter {

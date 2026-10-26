@@ -25,7 +25,7 @@ steps to work top to bottom, `## Conflicts to expect` is `path → what changed 
 | `skipped-plugin-owned` | a file an installed plugin owns — see below | **nothing here.** `pnpm plugin upgrade <id>`, after this |
 | `migration-derived` | `apps/web/migrations/**` | regenerate — see below |
 | `manual-toml` / `manual-env` | wrangler tomls, `.dev.vars.example`, `.env.test` | see below |
-| `manual (comments applied)` | manual configuration file whose comment-only hunks applied automatically | nothing; review it |
+| `manual-comments` | manual configuration file whose comment-only hunks apply automatically | nothing; review it |
 | `manual` | README, CI workflows, `package.json` | read the diff in `reference/`, apply what they want |
 | `binary` | not text | copy by hand if wanted |
 
@@ -121,7 +121,7 @@ its `-staging` suffix. Verify with `pnpm web test:config`.
 
 ## `.dev.vars.example` and `.env.test`
 
-Comment-only edits in `.dev.vars` files are applied automatically by `pnpm kit:upgrade` when they
+Comment-only edits in `.dev.vars` and `.env` files are applied automatically by `pnpm kit:upgrade` when they
 match cleanly. For configuration changes: key-level only: add the new keys with their comment block
 and a blank value, under the right heading. Do not apply the full diff — those files carry the
 adopter's own database naming.
